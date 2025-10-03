@@ -414,5 +414,9 @@
   "Trip saved (arrived at planned destination)": "تم حفظ الرحلة (تم الوصول إلى الوجهة)",
   "Walk to": "اتجه مشياً إلى",
   "to board the": "لركوب",
-  "Prepare to change at": "استعد لتبديل الخط عند"
+  "Prepare to change at": "استعد لتبديل الخط عند",
+  "Upcoming on": "القادم في",
+  "Transfer here": "انقل هنا",
+  "Planning route…": "يتم التخطيط للمسار…",
+  "Finding best transfers and timing": "جارٍ إيجاد أفضل التحويلات والتوقيت"
 }

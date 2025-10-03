@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:math' as math;
+import 'dart:math';
 import 'dart:ui' as ui;
 
+import 'package:darb/extension/sized_box_extension.dart';
 import 'package:darb/screens/ticket_screen.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, TargetPlatform;
@@ -16,6 +18,8 @@ import 'package:firebase_database/firebase_database.dart';
 import '../constants/colors.dart';
 import '../services/local_notifications.dart';
 import '../widgets/all_metro_lines.dart'; // metroLineColors
+import '../widgets/onboard_display.dart';
+import '../widgets/shimmers.dart';
 import 'account_drawer_screen.dart';
 import '../widgets/bottom_navigation_bar.dart';
 import '../widgets/filter_chip_pill.dart';
@@ -104,36 +108,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   // === Metro ETA model (average run + dwell at stops) ===
   static const double _METRO_CRUISE_MPS = 16.7; // ~60 km/h average along track
   static const int _DWELL_SECS = 22; // avg dwell 15–30s per stop
+  String _fmtClock(DateTime d) =>
+      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
 
-  // ===== one-shot / cooldown gating for nav alerts =====
-  final Map<String, DateTime> _alertShownAt = {};
-  final Duration _alertCooldown = const Duration(seconds: 45);
-  String? _lastWarnedBoardFor; // first-station id last warned for
-  bool _lastAlightFlag = false; // previous "alight at next" state
   String? _lastTransferKey; // "<stationId>|<toLineKey>"
-
-  bool _alertAllowed(String key, {Duration? cooldown}) {
-    final now = DateTime.now();
-    final last = _alertShownAt[key];
-    final cd = cooldown ?? _alertCooldown;
-    if (last == null || now.difference(last) >= cd) {
-      _alertShownAt[key] = now;
-      return true;
-    }
-    return false;
-  }
-
-  void _notifyOnce(String key, String message) {
-    if (!_navigating) return; // never spam when not in active nav
-    if (_alertAllowed(key)) _notify(message);
-  }
-
-  void _resetAlertGates() {
-    _alertShownAt.clear();
-    _lastWarnedBoardFor = null;
-    _lastAlightFlag = false;
-    _lastTransferKey = null;
-  }
 
   String? _metroCurLineKey; // current line user is riding
   int _stopsLeftOnLine = 0; // remaining stops on current line (updates live)
@@ -276,143 +254,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   bool _followEnabled = true; // when false, camera won’t auto-follow
   // Return nearest point on current leg's metro polyline to p, plus distance (meters).
 // If the leg or polyline is missing, returns (p, +inf) so caller can decide.
-  ({
-    String? lineKey,
-    int stopsLeftOnLine,
-    String? nextName,
-    String? afterName,
-    bool transferAtNext,
-    String? transferToLineKey,
-    bool alightAtNext,
-  }) _computeMetroBannerState() {
-    // Fallbacks if we don’t have enough context yet
-    if (_lastChosenRoute == null || _metroSeq.length < 2) {
-      return (
-        lineKey: null,
-        stopsLeftOnLine: 0,
-        nextName: _metroNextName,
-        afterName: _metroAfterName,
-        transferAtNext: false,
-        transferToLineKey: null,
-        alightAtNext: _metroAlightAtNext
-      );
-    }
-
-    final ids = _lastChosenRoute!.nodeIds;
-    final edges = _lastChosenRoute!.edgesInOrder;
-
-    // Clamp leg
-    final leg = _metroLeg.clamp(0, _metroSeq.length - 2);
-    // Find the “global” edge index that corresponds to our current leg
-    // The sequence is SRC -> ... -> DST, and edges[i] goes from ids[i] to ids[i+1].
-    // We need the first METRO edge at or after (station id of _metroSeq[leg]).
-    String legFromId = _metroSeq[leg].id; // station id like "blue:12"
-    // Find any index k such that ids[k] == legFromId and edges[k] is metro
-    int k = -1;
-    for (int i = 0; i < edges.length; i++) {
-      if (ids[i] == legFromId && edges[i].kind == 'metro') {
-        k = i;
-        break;
-      }
-    }
-    // If not found (can happen right after SRC walk), hunt forward to first metro edge
-    if (k == -1) {
-      for (int i = 0; i < edges.length; i++) {
-        if (edges[i].kind == 'metro') {
-          k = i;
-          break;
-        }
-      }
-      if (k == -1) {
-        // No metro edges at all (shouldn’t happen for metro routes)
-        return (
-          lineKey: null,
-          stopsLeftOnLine: 0,
-          nextName: _metroNextName,
-          afterName: _metroAfterName,
-          transferAtNext: false,
-          transferToLineKey: null,
-          alightAtNext: _metroAlightAtNext
-        );
-      }
-    }
-
-    // Current line is the lineKey of the next metro edge
-    final String? curLine = edges[k].lineKey;
-
-    // next / after names by leg within _metroSeq (these power ETA texts)
-    final int nextIdx = (_metroLeg + 1).clamp(0, _metroSeq.length - 1);
-    final int afterIdx = (_metroLeg + 2).clamp(0, _metroSeq.length - 1);
-    final String? nextName =
-        (nextIdx < _metroSeq.length) ? _metroSeq[nextIdx].name : null;
-    final String? afterName =
-        (afterIdx < _metroSeq.length) ? _metroSeq[afterIdx].name : null;
-
-    // Is the next station the final station?
-    final bool alightAtNext = (nextIdx < _metroSeq.length) &&
-        (_metroSeq[nextIdx].id == _metroSeq.last.id);
-
-    // Find the next transfer edge ahead of k
-    int transferEdgeIdx = -1;
-    for (int i = k; i < edges.length; i++) {
-      if (edges[i].kind == 'transfer') {
-        transferEdgeIdx = i;
-        break;
-      }
-    }
-
-    // Compute stops remaining on the current line until transfer or end of all metro edges
-    int stopsLeft = 0;
-    if (curLine != null) {
-      for (int i = k; i < edges.length; i++) {
-        final e = edges[i];
-        if (e.kind != 'metro') break;
-        if (e.lineKey != curLine) break;
-        stopsLeft += 1; // each metro edge = 1 inter-station hop remaining
-      }
-    }
-
-    // If a transfer exists, see if that transfer happens at the NEXT station
-    bool transferSoon = false;
-    String? transferToLine;
-    if (transferEdgeIdx != -1) {
-      // The transfer edge goes from ids[transferEdgeIdx] (station A) to ids[transferEdgeIdx+1] (station B)
-      // We “change here” at station A, then continue on station B’s line.
-      final String transferAtStationId = ids[transferEdgeIdx]; // A
-      final String transferToStationId = ids[transferEdgeIdx + 1]; // B
-      // Is the NEXT station (in metroSeq) equal to transferAtStationId?
-      if (nextIdx < _metroSeq.length &&
-          _metroSeq[nextIdx].id == transferAtStationId) {
-        transferSoon = true;
-        // Determine the line we are switching TO:
-        // Look ahead to first metro edge after the transfer edge to get its lineKey
-        for (int j = transferEdgeIdx + 1; j < edges.length; j++) {
-          if (edges[j].kind == 'metro') {
-            transferToLine = edges[j].lineKey;
-            break;
-          }
-        }
-        // If we couldn't find a metro edge after transfer (odd route), try station B's own lineKey
-        transferToLine ??=
-            _lastChosenRoute!.nodes[transferToStationId]?.lineKey;
-      }
-    }
-
-    // If the very next stop is transfer, the count of “stops left on THIS line” is 0.
-    if (transferSoon) {
-      stopsLeft = 0;
-    }
-
-    return (
-      lineKey: curLine,
-      stopsLeftOnLine: stopsLeft,
-      nextName: nextName,
-      afterName: afterName,
-      transferAtNext: transferSoon,
-      transferToLineKey: transferToLine,
-      alightAtNext: alightAtNext
-    );
-  }
 
   double _polylineLengthMeters(List<LatLng> pts) {
     if (pts.length < 2) return 0;
@@ -918,10 +759,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           first.pos.latitude,
           first.pos.longitude,
         );
-        if (d > 150) {
-          _notify(
-              'Walk to ${first.name} to board the ${first.lineKey[0].toUpperCase()}${first.lineKey.substring(1)} ${getTranslated(context, "line")}');
-        }
+        // if (d > 150) {
+        //   _notify(
+        //       'Walk to ${first.name} to board the ${first.lineKey[0].toUpperCase()}${first.lineKey.substring(1)} ${getTranslated(context, "line")}');
+        // }
       }
     }
 
@@ -929,112 +770,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _attachNavStream();
   }
 
-  // Future<void> _startTrip() async {
-  //   if (_userDestination == null) {
-  //     _notify(getTranslated(context, 'Pick a destination first.'));
-  //     return;
-  //   }
-  //   final perm = await Geolocator.checkPermission();
-  //   if (perm == LocationPermission.denied ||
-  //       perm == LocationPermission.deniedForever) {
-  //     _notify(getTranslated(context, 'Location permission denied.'));
-  //     return;
-  //   }
-  //
-  //   // resets
-  //   _nearDestSince = null;
-  //   _nearFinalSince = null;
-  //   _metroLeg = 0;
-  //   _nearNextSince = null;
-  //   _nextMinDist = double.infinity;
-  //
-  //   _tripDestLabel =
-  //       _destCtrl.text.isNotEmpty ? _destCtrl.text : _tripDestLabel;
-  //   _tripDestLL = _userDestination;
-  //   _tripOriginLabel =
-  //       _originCtrl.text.isNotEmpty ? _originCtrl.text : _tripOriginLabel;
-  //   _tripOriginLL = _userOrigin ??
-  //       (_lastKnownPosition != null
-  //           ? LatLng(
-  //               _lastKnownPosition!.latitude, _lastKnownPosition!.longitude)
-  //           : _lastCameraTarget);
-  //
-  //   final modeStr = (_tripMode == _TripMode.metro) ? 'metro' : 'car';
-  //   _tripStartAt = DateTime.now();
-  //   _tripDistance = 0;
-  //   _lastNavPoint = null;
-  //
-  //   _activeTripId = await _travelSvc.startTrip(
-  //     mode: modeStr,
-  //     originLabel: _tripOriginLabel,
-  //     destLabel: _tripDestLabel,
-  //     originLL: _tripOriginLL,
-  //     destLL: _tripDestLL,
-  //     startedAt: _tripStartAt,
-  //   );
-  //
-  //   // seed with current position
-  //   final pos = await Geolocator.getCurrentPosition(
-  //       desiredAccuracy: LocationAccuracy.best);
-  //   _navDestination = _userDestination;
-  //   final here0 = LatLng(pos.latitude, pos.longitude);
-  //   _navPoints = [here0];
-  //   _lastNavPoint = here0;
-  //
-  //   _navRemainingMeters = Geolocator.distanceBetween(pos.latitude,
-  //       pos.longitude, _navDestination!.latitude, _navDestination!.longitude);
-  //   _navSpeedMps = pos.speed;
-  //
-  //   // Car mode draws a breadcrumb; metro = no breadcrumb
-  //   if (_tripMode == _TripMode.drive &&
-  //       _driveAlternates != null &&
-  //       _driveAlternates!.isNotEmpty) {
-  //     final r = _driveAlternates![_drivePick];
-  //     _navPolyline = Polyline(
-  //         polylineId: PolylineId('nav_trace_${_trailVersion++}'),
-  //         color: Colors.grey.shade600,
-  //         width: 6,
-  //         points: _navPoints,
-  //         zIndex: 3000);
-  //     _navSteps = r.steps;
-  //     _navStepIndex = 0;
-  //     _navNow = _navSteps.isNotEmpty
-  //         ? (_navSteps.first.instruction ?? getTranslated(context, 'nav.start'))
-  //         : getTranslated(context, 'nav.start');
-  //     _navNext = _navSteps.length > 1
-  //         ? (_navSteps[1].instruction ?? getTranslated(context, 'nav.continue'))
-  //         : null;
-  //   } else {
-  //     _navPolyline = null; // <<< no trail in metro
-  //   }
-  //
-  //   await _prepareNavArrowIcon();
-  //
-  //   setState(() {
-  //     _navigating = true;
-  //     _followEnabled = true;
-  //     _offRouteStreak = 0;
-  //     _isRerouting = false;
-  //   });
-  //
-  //   if (_tripMode == _TripMode.metro && _lastChosenRoute != null) {
-  //     _metroSeq = _lastChosenRoute!.nodeIds
-  //         .where((id) => id.contains(':'))
-  //         .map((id) => _lastChosenRoute!.nodes[id]!)
-  //         .toList();
-  //
-  //     _metroLeg = 0;
-  //     _nearNextSince = null;
-  //     _nextMinDist = double.infinity;
-  //     _metroNextName = (_metroSeq.length >= 2) ? _metroSeq[1].name : null;
-  //     _metroAfterName = (_metroSeq.length >= 3) ? _metroSeq[2].name : null;
-  //     _metroAlightAtNext =
-  //         (_metroSeq.length >= 2) && (_metroSeq[1].id == _metroSeq.last.id);
-  //   }
-  //
-  //   await _bgNav.start(dest: _navDestination!);
-  //   _attachNavStream();
-  // }
   void _attachNavStream() {
     _uiNavSub?.cancel();
 
@@ -1451,339 +1186,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     });
   }
 
-  // void _attachNavStream() {
-  //   _uiNavSub?.cancel();
-  //   _uiNavSub = _bgNav.updates.listen((u) async {
-  //     final now = DateTime.now();
-  //     final bool isRealFix = !u.predicted;
-  //     LatLng here = u.here;
-  //     LatLng uiPos;
-  //     final prev = _lastNavPoint;
-  //
-  //     // Car dead-reckoning allowed only when moving & short gap
-  //     final drAllowed = (_tripMode == _TripMode.drive) &&
-  //         (u.speedMps.isFinite && u.speedMps > 1.4) &&
-  //         now.difference(_lastFixAt).inMilliseconds < 2500;
-  //
-  //     // ---------- Metro: validate, recover, map-match ----------
-  //     bool metroAccept = true;
-  //     _justAcceptedRaw = false;
-  //
-  //     if (isRealFix && _tripMode == _TripMode.metro) {
-  //       // Reject absurd speeds
-  //       if (u.speedMps.isFinite && u.speedMps > _metroMaxSpeedMps) {
-  //         metroAccept = false;
-  //       }
-  //
-  //       // Corridor depends on gap (recovery after tunnel)
-  //       final gapSecs = now.difference(_lastFixAt).inSeconds;
-  //       final corridor = (gapSecs > recoverGapSecs)
-  //           ? _recoveryCorridorM
-  //           : _metroCorridorMeters;
-  //
-  //       // Try leg map-match
-  //       var mm = _mapMatchToMetroLeg(here);
-  //       if (mm.distanceM > corridor) {
-  //         // Try whole-route recovery map-match
-  //         final all = _mapMatchToWholeMetro(here);
-  //         if (all.distanceM <= _recoveryCorridorM) {
-  //           here = all.pos;
-  //           _metroLeg = all.legIdx;
-  //           mm = (pos: all.pos, distanceM: all.distanceM);
-  //           metroAccept = true;
-  //         } else {
-  //           // FINAL RECOVERY FALLBACK: accept raw fix ONCE to re-anchor after tunnel
-  //           // if the jump is sane and we are not teleporting kilometers away.
-  //           final double jumpFromPrev =
-  //               (prev == null) ? 0.0 : _distMeters(prev, here);
-  //           final bool saneJump = jumpFromPrev <= 800.0; // ~0.8 km cap
-  //           if (gapSecs > recoverGapSecs && saneJump) {
-  //             metroAccept = true;
-  //             _justAcceptedRaw = true; // one tick only
-  //             // keep 'here' as raw GPS; next ticks will re-lock to track
-  //           } else {
-  //             metroAccept = false;
-  //           }
-  //         }
-  //       } else {
-  //         here = mm.pos; // snap to leg
-  //       }
-  //     }
-  //
-  //     // ---------- Station snap when leg advanced but no accepted fix ----------
-  //     LatLng? stationSnap;
-  //     if (_tripMode == _TripMode.metro &&
-  //         _metroSeq.length >= 2 &&
-  //         _lastLegShown != _metroLeg &&
-  //         !(isRealFix && metroAccept)) {
-  //       final int idx = (_metroLeg).clamp(0, _metroSeq.length - 1);
-  //       stationSnap = _metroSeq[idx].pos;
-  //     }
-  //
-  //     // Decide UI position
-  //     if (_tripMode == _TripMode.metro) {
-  //       if (stationSnap != null) {
-  //         uiPos = stationSnap;
-  //       } else {
-  //         uiPos = (isRealFix && metroAccept) ? here : (_lastNavPoint ?? here);
-  //       }
-  //     } else {
-  //       uiPos = (isRealFix || drAllowed) ? here : (_lastNavPoint ?? here);
-  //     }
-  //
-  //     // ---------- Distance / trail ----------
-  //     if (_tripMode == _TripMode.drive) {
-  //       if (isRealFix && prev != null) {
-  //         final seg = Geolocator.distanceBetween(
-  //             prev.latitude, prev.longitude, uiPos.latitude, uiPos.longitude);
-  //         if (seg.isFinite) _tripDistance += seg.round();
-  //       }
-  //       if (isRealFix &&
-  //           (_navPoints.isEmpty || _distMeters(_navPoints.last, uiPos) >= 2)) {
-  //         _navPoints.add(uiPos);
-  //         _navPolyline =
-  //             _navPolyline?.copyWith(pointsParam: List.of(_navPoints));
-  //       }
-  //     } else {
-  //       // metro: no breadcrumb; still count distance on accepted or station-snap
-  //       if ((isRealFix && metroAccept) && prev != null) {
-  //         final seg = Geolocator.distanceBetween(
-  //             prev.latitude, prev.longitude, uiPos.latitude, uiPos.longitude);
-  //         if (seg.isFinite) _tripDistance += seg.round();
-  //       }
-  //     }
-  //
-  //     // ---------- Marker / heading ----------
-  //     double brg;
-  //     if ((isRealFix && (_tripMode != _TripMode.metro || metroAccept)) &&
-  //         prev != null &&
-  //         _distMeters(prev, uiPos) > 1.5) {
-  //       brg = _bearing(prev, uiPos);
-  //     } else {
-  //       brg = (drAllowed && _tripMode == _TripMode.drive)
-  //           ? u.headingDeg
-  //           : _lastFixHeading;
-  //     }
-  //     if (_navArrowIcon != null) {
-  //       _userArrowMarker = Marker(
-  //         markerId: const MarkerId('me_nav'),
-  //         position: uiPos,
-  //         icon: _navArrowIcon!,
-  //         anchor: const Offset(0.5, 0.5),
-  //         flat: true,
-  //         rotation: brg,
-  //         zIndex: 4000,
-  //       );
-  //     }
-  //
-  //     // ---------- Live status ----------
-  //     double uiSpeed = u.speedMps;
-  //     if (_tripMode == _TripMode.metro) {
-  //       if (!(isRealFix && metroAccept)) uiSpeed = 0.0;
-  //     } else if (!isRealFix && !drAllowed) {
-  //       uiSpeed = 0.0;
-  //     }
-  //     _navSpeedMps = uiSpeed;
-  //
-  //     if (_navDestination != null) {
-  //       _navRemainingMeters = Geolocator.distanceBetween(
-  //         uiPos.latitude,
-  //         uiPos.longitude,
-  //         _navDestination!.latitude,
-  //         _navDestination!.longitude,
-  //       );
-  //     }
-  //
-  //     // ---------- Car steps ----------
-  //     if (isRealFix && _tripMode == _TripMode.drive) _maybeAdvanceStep(here);
-  //
-  //     // ---------- METRO leg advance hysteresis (unchanged logic) ----------
-  //     final bool canAdvanceMetro = (_tripMode == _TripMode.metro) &&
-  //         (_metroSeq.length >= 2) &&
-  //         ((isRealFix && metroAccept) || stationSnap != null);
-  //
-  //     if (canAdvanceMetro) {
-  //       _metroLeg = _metroLeg.clamp(0, _metroSeq.length - 2);
-  //       final StationNode next = _metroSeq[_metroLeg + 1];
-  //
-  //       final double dNext = Geolocator.distanceBetween(uiPos.latitude,
-  //           uiPos.longitude, next.pos.latitude, next.pos.longitude);
-  //
-  //       _nextMinDist = math.min(_nextMinDist, dNext);
-  //
-  //       const double ENTER_RADIUS = 120.0;
-  //       const double ARRIVE_RADIUS = 45.0;
-  //       const int LINGER_SECS = 2;
-  //       const double PASS_DELTA = 20.0;
-  //
-  //       if (dNext < ENTER_RADIUS)
-  //         _nearNextSince ??= now;
-  //       else {
-  //         _nearNextSince = null;
-  //         _nextMinDist = double.infinity;
-  //       }
-  //
-  //       bool arrivedNow = false;
-  //       if (dNext < ARRIVE_RADIUS) {
-  //         _nearNextSince ??= now;
-  //         if (now.difference(_nearNextSince!).inSeconds >= LINGER_SECS)
-  //           arrivedNow = true;
-  //       }
-  //       if (!arrivedNow &&
-  //           _nextMinDist.isFinite &&
-  //           (dNext - _nextMinDist) > PASS_DELTA) arrivedNow = true;
-  //
-  //       if (arrivedNow) {
-  //         if (_metroLeg + 1 < _metroSeq.length)
-  //           _metroLeg = (_metroLeg + 1).clamp(0, _metroSeq.length - 1);
-  //         _nearNextSince = null;
-  //         _nextMinDist = double.infinity;
-  //       }
-  //     }
-  //
-  //     // Remember last leg we rendered (used by station-snap)
-  //     _lastLegShown = _metroLeg;
-  //
-  //     // ---------- Compute banner state (line color, stops left, transfer) ----------
-  //     if (_tripMode == _TripMode.metro) {
-  //       final s = _computeMetroBannerState();
-  //       _metroCurLineKey = s.lineKey;
-  //       _stopsLeftOnLine = s.stopsLeftOnLine;
-  //       _metroNextName = s.nextName;
-  //       _metroAfterName = s.afterName;
-  //       _transferAtNext = s.transferAtNext;
-  //       _transferToLineKey = s.transferToLineKey;
-  //       _metroAlightAtNext = s.alightAtNext;
-  //     }
-  //
-  //     // ---------- Progress writes ----------
-  //     final secs = now.difference(_tripStartAt ?? now).inSeconds;
-  //     final okToWrite = isRealFix &&
-  //         (_tripMode != _TripMode.metro || metroAccept || _justAcceptedRaw);
-  //     if (okToWrite && _activeTripId != null && secs % 10 == 0) {
-  //       await _travelSvc.updateProgress(
-  //           entryId: _activeTripId!,
-  //           distanceMeters: _tripDistance,
-  //           durationSeconds: secs);
-  //     }
-  //
-  //     // ---------- Car rerouting (unchanged) ----------
-  //     if (isRealFix &&
-  //         _tripMode == _TripMode.drive &&
-  //         _driveAlternates != null &&
-  //         _driveAlternates!.isNotEmpty) {
-  //       _snapToNearestAlternateIfCloser(here);
-  //       final sel = _driveAlternates![_drivePick];
-  //       final dSel = _distancePointToPolylineMeters(here, sel.points);
-  //       final v =
-  //           (_navSpeedMps.isFinite && _navSpeedMps >= 0) ? _navSpeedMps : 0.0;
-  //       final offThr = v < 4.0 ? 45.0 : (v < 12.0 ? 65.0 : 85.0);
-  //       if (dSel > offThr)
-  //         _offRouteStreak++;
-  //       else
-  //         _offRouteStreak = 0;
-  //       final longEnoughSinceLast =
-  //           now.difference(_lastRerouteAt) > const Duration(seconds: 10);
-  //       if (!_isRerouting && _offRouteStreak >= 5 && longEnoughSinceLast) {
-  //         _isRerouting = true;
-  //         setState(() {
-  //           _navNow = getTranslated(context, 'Re-routing...');
-  //           _navNext = null;
-  //         });
-  //         await _rerouteFrom(here);
-  //         _offRouteStreak = 0;
-  //         _isRerouting = false;
-  //         _lastRerouteAt = now;
-  //       }
-  //     }
-  //
-  //     // ---------- Camera follow ----------
-  //     if (_tripMode == _TripMode.metro) {
-  //       if ((isRealFix && metroAccept) || stationSnap != null) {
-  //         await _throttledFollow(uiPos, _lastFixHeading,
-  //             speedMps: _navSpeedMps);
-  //       }
-  //     } else if (isRealFix || drAllowed) {
-  //       await _throttledFollow(uiPos, _lastFixHeading, speedMps: _navSpeedMps);
-  //     }
-  //
-  //     // ---------- Update lasts ----------
-  //     if (_tripMode == _TripMode.metro) {
-  //       if ((isRealFix && metroAccept) ||
-  //           stationSnap != null ||
-  //           _justAcceptedRaw) {
-  //         _lastFixAt = now;
-  //         _lastFixLL = uiPos;
-  //         _lastFixSpeed = _navSpeedMps;
-  //         _lastFixHeading = _lastFixHeading;
-  //         _lastNavPoint = uiPos;
-  //       }
-  //     } else if (isRealFix || drAllowed) {
-  //       _lastFixAt = now;
-  //       _lastFixLL = uiPos;
-  //       _lastFixSpeed = _navSpeedMps;
-  //       _lastFixHeading = _lastFixHeading;
-  //       _lastNavPoint = uiPos;
-  //     }
-  //
-  //     // ---------- Arrival detection ----------
-  //     bool allowFinalStationEnd = false;
-  //     if (_tripMode == _TripMode.metro &&
-  //         _metroSeq.isNotEmpty &&
-  //         _tripDestLL != null) {
-  //       final StationNode finalSt = _metroSeq.last;
-  //       final double dToDestFromFinal = Geolocator.distanceBetween(
-  //           finalSt.pos.latitude,
-  //           finalSt.pos.longitude,
-  //           _tripDestLL!.latitude,
-  //           _tripDestLL!.longitude);
-  //       allowFinalStationEnd = dToDestFromFinal <= 80.0;
-  //     }
-  //
-  //     if (_navDestination != null &&
-  //         (isRealFix || stationSnap != null || _justAcceptedRaw)) {
-  //       final moving = _navSpeedMps.isFinite && _navSpeedMps > 0.8;
-  //
-  //       if (_navRemainingMeters < 65 && !moving) {
-  //         _nearDestSince ??= now;
-  //         if (now.difference(_nearDestSince!).inSeconds >= 8) {
-  //           _notify(getTranslated(context, 'You have arrived.'));
-  //           _endTrip();
-  //           return;
-  //         }
-  //       } else {
-  //         _nearDestSince = null;
-  //       }
-  //
-  //       if (allowFinalStationEnd) {
-  //         final StationNode finalSt = _metroSeq.last;
-  //         final double dFinal = Geolocator.distanceBetween(uiPos.latitude,
-  //             uiPos.longitude, finalSt.pos.latitude, finalSt.pos.longitude);
-  //         if (dFinal < 45 && !moving) {
-  //           _nearFinalSince ??= now;
-  //           if (now.difference(_nearFinalSince!).inSeconds >= 8) {
-  //             _notify(getTranslated(context, 'You have arrived.'));
-  //             _endTrip();
-  //             return;
-  //           }
-  //         } else {
-  //           _nearFinalSince = null;
-  //         }
-  //       } else {
-  //         _nearFinalSince = null;
-  //       }
-  //     }
-  //
-  //     if (isRealFix && _navDestination != null && _navRemainingMeters < 35) {
-  //       _notify(getTranslated(context, 'You have arrived.'));
-  //       _endTrip();
-  //       return;
-  //     }
-  //
-  //     if (mounted) setState(() {});
-  //   });
-  // }
-
   Future<void> _onRecenter() async {
     setState(() => _followEnabled = true);
     final here = _lastNavPoint ?? _lastCameraTarget;
@@ -1921,57 +1323,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _nextMinDist = double.infinity;
     });
   }
-
-  // void _endTrip() async {
-  //   // Stop background session (but do not call this in dispose)
-  //   await _bgNav.stop();
-  //   _uiNavSub?.cancel();
-  //   _uiNavSub = null;
-  //
-  //   _predictTimer?.cancel();
-  //   _predictTimer = null;
-  //
-  //   // finalize history if started
-  //   if (_activeTripId != null && _tripStartAt != null) {
-  //     final duration = DateTime.now().difference(_tripStartAt!).inSeconds;
-  //     await _travelSvc.finishTrip(
-  //       entryId: _activeTripId!,
-  //       distanceMeters: _tripDistance,
-  //       durationSeconds: duration,
-  //       finishedAt: DateTime.now(),
-  //     );
-  //   }
-  //
-  //   setState(() {
-  //     _navigating = false;
-  //     _followEnabled = true;
-  //     _navPolyline = null;
-  //     _navPoints.clear();
-  //     _navDestination = null;
-  //     _navRemainingMeters = 0;
-  //     _navSpeedMps = 0;
-  //
-  //     _activeTripId = null;
-  //     _tripStartAt = null;
-  //     _tripDistance = 0;
-  //     _lastNavPoint = null;
-  //
-  //     _navSteps = [];
-  //     _navStepIndex = 0;
-  //     _navNow = null;
-  //     _navNext = null;
-  //     _trafficEnabled = false;
-  //
-  //     _userArrowMarker = null;
-  //
-  //     // NEW: reset metro-friendly arrival helpers
-  //     _nearDestSince = null;
-  //     _nearFinalSince = null;
-  //     _metroLeg = 0;
-  //     _nearNextSince = null;
-  //     _nextMinDist = double.infinity;
-  //   });
-  // }
 
   // Car ETA (old behavior preserved)
   double _etaSecondsCar() {
@@ -3559,137 +2910,95 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     return _hueForColor(c);
   }
 
-  // ====== Alert plan (figures out transfer stations & final station) ======
-  List<String> _metroStopOrder = [];
-  final Set<String> _transferStations = {};
-  String? _finalStation;
-  String? _firstStation;
-  String? _lastAlertSig;
-  bool _alertsEnabled = true;
+  void _showUpcomingStopsOnCurrentLine() {
+    if (_metroSeq.length < 2 || _metroCurLineKey == null) return;
 
-  void _initMetroAlertPlan(RouteOption r) {
-    _metroStopOrder = [];
-    _transferStations.clear();
-    _firstStation = null;
-    _finalStation = null;
+    // Collect next stops on the CURRENT line only, until transfer/end
+    final String curLine = _metroCurLineKey!;
+    final stops = <({String name, bool isTransfer})>[];
 
-    String? curLine;
-    for (int i = 0; i < r.edgesInOrder.length; i++) {
-      final e = r.edgesInOrder[i];
-      final fromId = r.nodeIds[i];
-      final toId = r.nodeIds[i + 1];
+    // Start from the next station of the current leg
+    for (int i = _metroLeg + 1; i < _metroSeq.length; i++) {
+      final prev = _metroSeq[i - 1];
+      final st = _metroSeq[i];
 
-      if (e.kind == 'metro') {
-        final toSt = r.nodes[toId]!;
-        curLine ??= e.lineKey;
-        if (!_metroStopOrder.contains(toSt.name))
-          _metroStopOrder.add(toSt.name);
+      // If the previous hop wasn't on the same line anymore, we’re past the segment
+      if (prev.lineKey != curLine) break;
 
-        _firstStation ??= r
-            .nodes[r.nodeIds
-                .firstWhere((id) => id.contains(':'), orElse: () => toId)]
-            ?.name;
-
-        final bool last = i == r.edgesInOrder.length - 1;
-        if (!last) {
-          final next = r.edgesInOrder[i + 1];
-          final lineChange = next.kind == 'metro' && next.lineKey != curLine;
-          if (next.kind == 'transfer' || lineChange) {
-            _transferStations.add(toSt.name);
-            curLine = null;
-          }
-        } else {
-          _finalStation = toSt.name;
-        }
+      // A transfer **after** this station happens if the next hop switches lines
+      bool transferAfterThis = false;
+      if (i + 1 < _metroSeq.length) {
+        final here = _metroSeq[i];
+        final next = _metroSeq[i + 1];
+        transferAfterThis = (here.lineKey != next.lineKey);
       }
-    }
-    if (_finalStation == null && _metroStopOrder.isNotEmpty) {
-      _finalStation = _metroStopOrder.last;
-    }
-    _lastAlertSig = null;
-  }
 
-// ====== Fire alerts (toast+haptic) ======
-  void _maybeAlertForMetro({
-    required String? nextName,
-    required String? afterName,
-    required bool alightAtNext,
-    required bool onFirstLeg,
-  }) {
-    if (!_alertsEnabled) return;
+      stops.add((name: st.name, isTransfer: transferAfterThis));
 
-    // Off-metro nudge to first station (once)
-    if (onFirstLeg && (_firstStation != null)) {
-      final sig = 'walk_to|${_firstStation!}';
-      if (_lastAlertSig != sig) {
-        _lastAlertSig = sig;
-        _alert(
-          '${getTranslated(context, "Walk to")} ${_firstStation!} '
-          '${getTranslated(context, "to board the")} '
-          '${_cap(_selectedLineKey ?? _lastChosenRoute?.lineSequence.first ?? "")} '
-          '${getTranslated(context, "line")}',
-          strong: false,
-        );
-      }
+      // If we’ll transfer after this stop, stop listing here
+      if (transferAfterThis) break;
     }
 
-    // Prepare one stop early
-    if (afterName != null && afterName.isNotEmpty) {
-      if (_transferStations.contains(afterName)) {
-        final sig = 'prep_xfer|$afterName';
-        if (_lastAlertSig != sig) {
-          _lastAlertSig = sig;
-          _alert('${getTranslated(context, "Prepare to change at")} $afterName',
-              strong: false);
-        }
-      }
-      if (_finalStation != null && afterName == _finalStation) {
-        final sig = 'prep_alight|$afterName';
-        if (_lastAlertSig != sig) {
-          _lastAlertSig = sig;
-          _alert(getTranslated(context, "Alight at next station"),
-              strong: false);
-        }
-      }
-    }
+    if (stops.isEmpty) return;
 
-    // Now alerts
-    if (nextName != null && nextName.isNotEmpty) {
-      if (_transferStations.contains(nextName)) {
-        final sig = 'now_xfer|$nextName';
-        if (_lastAlertSig != sig) {
-          _lastAlertSig = sig;
-          _alert(getTranslated(context, "Change line here"), strong: true);
-        }
-      }
-      final isFinal = _finalStation != null && nextName == _finalStation;
-      if (alightAtNext && isFinal) {
-        final sig = 'now_alight|$nextName';
-        if (_lastAlertSig != sig) {
-          _lastAlertSig = sig;
-          _alert(getTranslated(context, "Alight at next station"),
-              strong: true);
-        }
-      }
-    }
-  }
-
-  void _alert(String msg, {bool strong = false}) {
-    try {
-      if (strong) {
-        HapticFeedback.heavyImpact();
-      } else {
-        HapticFeedback.selectionClick();
-      }
-    } catch (_) {}
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(msg),
-        backgroundColor: strong ? Colors.green.shade700 : Colors.black87,
-        behavior: SnackBarBehavior.floating,
-        duration: Duration(seconds: strong ? 3 : 2),
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
+      ),
+      builder: (_) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const SizedBox(height: 12),
+            Container(
+              width: 42,
+              height: 4,
+              decoration: BoxDecoration(
+                color: Colors.black12,
+                borderRadius: BorderRadius.circular(100),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  '${getTranslated(context, "Upcoming on")} ${_cap(curLine)} ${getTranslated(context, "line")}',
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w700),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Flexible(
+              child: ListView.separated(
+                shrinkWrap: true,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+                itemCount: stops.length,
+                separatorBuilder: (_, __) => const Divider(height: 1),
+                itemBuilder: (_, i) {
+                  final s = stops[i];
+                  return ListTile(
+                    leading: const Icon(Icons.directions_subway_filled),
+                    title: Text(
+                      s.name,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    subtitle: s.isTransfer
+                        ? Text(
+                            getTranslated(context, 'Transfer here'),
+                            style: const TextStyle(color: Colors.orange),
+                          )
+                        : null,
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -3876,12 +3185,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
         if (_checkingLocation)
           const Positioned.fill(
-              child: IgnorePointer(
-            child: DecoratedBox(
-              decoration: BoxDecoration(color: Colors.transparent),
-              child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            child: IgnorePointer(
+              child: MapLoadingShimmer(),
             ),
-          )),
+          ),
 
         // profile
         SafeArea(
@@ -3981,31 +3288,40 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                           const Color(0xFF1B5E20))
                       : const Color(0xFF1B5E20);
 
-                  // A small helper to show a pill
-                  Widget _pill(IconData icon, String text, {Color? fg}) {
-                    return Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 6),
-                      decoration: BoxDecoration(
-                        color: Colors.white.withOpacity(0.12),
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Icon(icon, size: 16, color: fg ?? Colors.white),
-                          const SizedBox(width: 6),
-                          Text(
-                            text,
-                            style: TextStyle(
-                              color: fg ?? Colors.white,
-                              fontWeight: FontWeight.w700,
+                  // compute start/arrival BEFORE returning the Container
+                  final DateTime startT = _tripStartAt ?? DateTime.now();
+
+// _etaSecondsForUI() may return double — convert to a non-negative int
+                  final int etaSecs = ((_etaSecondsForUI() as num).ceil())
+                      .clamp(0, 7 * 24 * 3600);
+
+                  final DateTime etaT =
+                      DateTime.now().add(Duration(seconds: etaSecs));
+
+                  // Small helper pill
+                  Widget _pill(IconData icon, String text, {Color? fg}) =>
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 10, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.12),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(icon, size: 16, color: fg ?? Colors.white),
+                            const SizedBox(width: 6),
+                            Text(
+                              text,
+                              style: TextStyle(
+                                color: fg ?? Colors.white,
+                                fontWeight: FontWeight.w700,
+                              ),
                             ),
-                          ),
-                        ],
-                      ),
-                    );
-                  }
+                          ],
+                        ),
+                      );
 
                   return Container(
                     margin: const EdgeInsets.only(top: 8),
@@ -4016,10 +3332,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                       borderRadius: BorderRadius.circular(18),
                       boxShadow: const [
                         BoxShadow(
-                          blurRadius: 8,
-                          color: Colors.black26,
-                          offset: Offset(0, 2),
-                        )
+                            blurRadius: 8,
+                            color: Colors.black26,
+                            offset: Offset(0, 2))
                       ],
                     ),
                     child: Column(
@@ -4037,9 +3352,19 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                         ),
                         const SizedBox(height: 4),
 
-                        // ETA / distance / speed row
+                        // Start / Arrival line
                         Text(
-                          '${_fmtMins(_etaSecondsForUI())} • ${_fmtDist(_navRemainingMeters)} • ${_fmtSpeed(_navSpeedMps)}',
+                          '${getTranslated(context, "Start")}: ${_fmtClock(startT)} • '
+                          '${getTranslated(context, "Arrival")}: ${_fmtClock(etaT)}',
+                          style: const TextStyle(
+                            color: Colors.white70,
+                            fontWeight: FontWeight.w600,
+                            fontSize: 14,
+                          ),
+                        ),
+                        4.kH,
+                        Text(
+                          '${_fmtDist(_navRemainingMeters)} • ${_fmtSpeed(_navSpeedMps)}',
                           style: const TextStyle(
                             color: Colors.white70,
                             fontWeight: FontWeight.w600,
@@ -4055,21 +3380,256 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                               spacing: 8,
                               runSpacing: 6,
                               children: [
-                                _pill(
-                                  Icons.directions_subway_filled,
-                                  '${getTranslated(context, 'line')} ${_cap(_metroCurLineKey!)} • ${_stopsLeftOnLine} ${getTranslated(context, 'stations')}',
-                                ),
+                                // Make sure you already added: import 'package:your_app/widgets/metro/onboard_display.dart';
+
+                                InkWell(
+                                  borderRadius: BorderRadius.circular(10),
+                                  onTap: () async {
+                                    if (_metroCurLineKey == null) return;
+
+                                    // 1) Get current location with a safe fallback
+                                    Position pos;
+                                    try {
+                                      pos = await Geolocator.getCurrentPosition(
+                                          desiredAccuracy:
+                                              LocationAccuracy.high);
+                                    } catch (_) {
+                                      pos = await Geolocator
+                                              .getLastKnownPosition() ??
+                                          Position(
+                                            latitude: 24.7136,
+                                            longitude:
+                                                46.6753, // Riyadh center fallback
+                                            timestamp: DateTime.now(),
+                                            accuracy: 100.0,
+                                            altitude: 0.0,
+                                            altitudeAccuracy: 0.0,
+                                            heading: 0.0,
+                                            headingAccuracy: 0.0,
+                                            speed: 0.0,
+                                            speedAccuracy: 0.0,
+                                            isMocked: false,
+                                            floor: null,
+                                          );
+                                    }
+                                    final double myLat = pos.latitude;
+                                    final double myLng = pos.longitude;
+
+                                    // 2) Color mapper
+                                    Color _colorFor(String key) {
+                                      switch (key.toLowerCase()) {
+                                        case 'blue':
+                                          return const Color(0xFF1E88E5);
+                                        case 'red':
+                                          return const Color(0xFFE53935);
+                                        case 'green':
+                                          return const Color(0xFF43A047);
+                                        case 'yellow':
+                                          return const Color(0xFFFDD835);
+                                        case 'orange':
+                                          return const Color(0xFFFB8C00);
+                                        case 'purple':
+                                          return const Color(0xFF8E24AA);
+                                        default:
+                                          return Theme.of(context)
+                                              .colorScheme
+                                              .primary;
+                                      }
+                                    }
+
+                                    // 3) Choose station list for current line
+                                    final String rawKey = _metroCurLineKey!;
+                                    final String keyLower =
+                                        rawKey.toLowerCase();
+                                    final List<Map<String, dynamic>> rawStops =
+                                        switch (keyLower) {
+                                      'red' => metro.redStations,
+                                      'yellow' => metro.yellowStations,
+                                      'purple' => metro.purpleStations,
+                                      'blue' => metro.blueStations,
+                                      'orange' => metro.orangeStations,
+                                      'green' => metro.greenStations,
+                                      _ => const <Map<String, dynamic>>[],
+                                    };
+                                    if (rawStops.isEmpty) return;
+
+                                    // 4) Build a name->lines index (for transfer badges)
+                                    final Map<String, List<String>>
+                                        nameToLines = {};
+                                    void _index(String line,
+                                        List<Map<String, dynamic>> list) {
+                                      for (final s in list) {
+                                        final n = (s['name'] as String).trim();
+                                        nameToLines
+                                            .putIfAbsent(n, () => <String>[])
+                                            .add(line);
+                                      }
+                                    }
+
+                                    _index('Red', metro.redStations);
+                                    _index('Yellow', metro.yellowStations);
+                                    _index('Purple', metro.purpleStations);
+                                    _index('Blue', metro.blueStations);
+                                    _index('Orange', metro.orangeStations);
+                                    _index('Green', metro.greenStations);
+
+                                    // 5) Map to MetroStop and keep lat/lng
+                                    final enriched = rawStops.map((m) {
+                                      final String nameEn = m['name'] as String;
+                                      final transfers = List<String>.from(
+                                              nameToLines[nameEn] ??
+                                                  const <String>[])
+                                          .where((l) =>
+                                              l.toLowerCase() != keyLower)
+                                          .toList();
+                                      return (
+                                        stop: MetroStop(
+                                          id: nameEn,
+                                          nameEn: nameEn,
+                                          nameAr: m['nameAr'] as String,
+                                          isTransfer: transfers.isNotEmpty,
+                                          transferLines: transfers,
+                                        ),
+                                        lat: (m['lat'] as num).toDouble(),
+                                        lng: (m['lng'] as num).toDouble(),
+                                      );
+                                    }).toList();
+                                    final List<MetroStop> stops =
+                                        enriched.map((e) => e.stop).toList();
+
+                                    // 6) Helpers
+                                    double _deg(double v) =>
+                                        v * (math.pi / 180.0);
+                                    double _haversine(double lat1, double lon1,
+                                        double lat2, double lon2) {
+                                      const R = 6371000.0;
+                                      final dLat = _deg(lat2 - lat1);
+                                      final dLon = _deg(lon2 - lon1);
+                                      final a = math.sin(dLat / 2) *
+                                              math.sin(dLat / 2) +
+                                          math.cos(_deg(lat1)) *
+                                              math.cos(_deg(lat2)) *
+                                              math.sin(dLon / 2) *
+                                              math.sin(dLon / 2);
+                                      final c = 2 *
+                                          math.atan2(
+                                              math.sqrt(a), math.sqrt(1 - a));
+                                      return R * c;
+                                    }
+
+                                    // 7) Nearest station to YOU (currentIdx)
+                                    int currentIdx = 0;
+                                    double best = double.infinity;
+                                    for (int i = 0; i < enriched.length; i++) {
+                                      final d = _haversine(myLat, myLng,
+                                          enriched[i].lat, enriched[i].lng);
+                                      if (d < best) {
+                                        best = d;
+                                        currentIdx = i;
+                                      }
+                                    }
+
+                                    // 8) Destination-aware DIRECTION (terminal)
+                                    // Replace these with your real destination variables:
+                                    final LatLng? _destLL = _tripDestLL ??
+                                        _navDestination ??
+                                        _userDestination;
+                                    final double? destLat = _destLL?.latitude;
+                                    final double? destLng = _destLL?.longitude;
+
+                                    bool forward;
+                                    if (destLat != null && destLng != null) {
+                                      // snap destination to nearest station on this line
+                                      int destIdx = 0;
+                                      double bestDest = double.infinity;
+                                      for (int i = 0;
+                                          i < enriched.length;
+                                          i++) {
+                                        final d = _haversine(destLat, destLng,
+                                            enriched[i].lat, enriched[i].lng);
+                                        if (d < bestDest) {
+                                          bestDest = d;
+                                          destIdx = i;
+                                        }
+                                      }
+                                      // move forward if destination is after current in list order
+                                      forward = destIdx >= currentIdx;
+
+                                      // if equal, choose closer terminal from current position
+                                      if (destIdx == currentIdx) {
+                                        final dToFirst = _haversine(
+                                            enriched[currentIdx].lat,
+                                            enriched[currentIdx].lng,
+                                            enriched.first.lat,
+                                            enriched.first.lng);
+                                        final dToLast = _haversine(
+                                            enriched[currentIdx].lat,
+                                            enriched[currentIdx].lng,
+                                            enriched.last.lat,
+                                            enriched.last.lng);
+                                        forward = dToLast < dToFirst;
+                                      }
+                                    } else {
+                                      // fallback if no destination set: neighbor-distance heuristic
+                                      final prevIdx = (currentIdx - 1)
+                                          .clamp(0, stops.length - 1);
+                                      final nextIdx = (currentIdx + 1)
+                                          .clamp(0, stops.length - 1);
+                                      final dPrev = _haversine(
+                                          myLat,
+                                          myLng,
+                                          enriched[prevIdx].lat,
+                                          enriched[prevIdx].lng);
+                                      final dNext = _haversine(
+                                          myLat,
+                                          myLng,
+                                          enriched[nextIdx].lat,
+                                          enriched[nextIdx].lng);
+                                      forward = dNext <= dPrev;
+                                    }
+
+                                    // 9) Header (terminal) + visuals
+                                    final String lineKey = _cap(rawKey);
+                                    final Color lineColor = _colorFor(rawKey);
+                                    final String dirEn = forward
+                                        ? 'To ${stops.last.nameEn}'
+                                        : 'To ${stops.first.nameEn}';
+                                    final String dirAr = forward
+                                        ? 'إلى ${stops.last.nameAr}'
+                                        : 'إلى ${stops.first.nameAr}';
+
+                                    await showOnboardDisplay(
+                                      context,
+                                      stops: stops,
+                                      currentIndex: currentIdx,
+                                      lineKey: lineKey,
+                                      lineColor: lineColor,
+                                      directionNameEn: dirEn,
+                                      directionNameAr: dirAr,
+                                      etaToNext: const Duration(minutes: 1),
+                                      isRTL: Localizations.localeOf(context)
+                                              .languageCode ==
+                                          'ar',
+                                      forward: forward,
+                                    );
+                                  },
+                                  child: _pill(
+                                    Icons.directions_subway_filled,
+                                    ' ${_cap(_metroCurLineKey!)} ${getTranslated(context, "line")} • '
+                                    '$_stopsLeftOnLine ${getTranslated(context, "stations")}',
+                                  ),
+                                )
                               ],
                             ),
                           ),
 
-                        // Transfer messaging OR Next/After
+                        // Transfer vs Next/After
                         if (_transferAtNext && _transferToLineKey != null)
                           Padding(
                             padding: const EdgeInsets.only(top: 8.0),
                             child: Text(
-                              // e.g., "Change line here → Blue line"
-                              '${getTranslated(context, "Change line here")} → ${_cap(_transferToLineKey!)} ${getTranslated(context, "line")}',
+                              '${getTranslated(context, "Change line here")} → '
+                              '${_cap(_transferToLineKey!)} ${getTranslated(context, "line")}',
                               style: const TextStyle(
                                 color: Colors.yellowAccent,
                                 fontSize: 15,
@@ -4127,20 +3687,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                               ),
                             ),
                         ],
-
-                        // Alight at next station
-                        if (_metroAlightAtNext)
-                          Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              getTranslated(context, 'Alight at next station'),
-                              style: const TextStyle(
-                                color: Colors.redAccent,
-                                fontSize: 14.5,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                          ),
                       ],
                     ),
                   );
@@ -4148,51 +3694,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               ),
             ),
           ),
-
-        // if (_navigating && _tripMode == _TripMode.metro)
-        //   SafeArea(
-        //     child: Align(
-        //       alignment: Alignment.topCenter,
-        //       child: Container(
-        //         margin: const EdgeInsets.only(top: 8),
-        //         padding:
-        //             const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        //         decoration: BoxDecoration(
-        //           color: const Color(0xFF1B5E20),
-        //           borderRadius: BorderRadius.circular(18),
-        //           boxShadow: const [
-        //             BoxShadow(
-        //                 blurRadius: 8,
-        //                 color: Colors.black26,
-        //                 offset: Offset(0, 2))
-        //           ],
-        //         ),
-        //         child: Column(
-        //           mainAxisSize: MainAxisSize.min,
-        //           crossAxisAlignment: CrossAxisAlignment.start,
-        //           children: [
-        //             Text(
-        //               '${getTranslated(context, 'Destination to')} ${_lastDestLabel ?? ''}',
-        //               style: const TextStyle(
-        //                 color: Colors.white,
-        //                 fontWeight: FontWeight.w700,
-        //                 fontSize: 18,
-        //               ),
-        //             ),
-        //             const SizedBox(height: 4),
-        //             Text(
-        //               '${_fmtMins(_etaSeconds())} • ${_fmtDist(_navRemainingMeters)} • ${_fmtSpeed(_navSpeedMps)}',
-        //               style: const TextStyle(
-        //                 color: Colors.white70,
-        //                 fontWeight: FontWeight.w600,
-        //                 fontSize: 14,
-        //               ),
-        //             ),
-        //           ],
-        //         ),
-        //       ),
-        //     ),
-        //   ),
         // ───────────────────────── bottom sheet (hidden while navigating) ─────────────────────────
         if (!_navigating)
           DraggableScrollableSheet(
@@ -4341,9 +3842,16 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     showDialog(
                                       context: context,
                                       barrierDismissible: false,
-                                      builder: (_) => const Center(
-                                          child: CircularProgressIndicator()),
+                                      builder: (_) => BusyShimmerDialog(
+                                        title: getTranslated(
+                                            context, 'Planning route…'),
+                                        subtitle: getTranslated(context,
+                                            'Finding best transfers and timing'),
+                                      ),
                                     );
+                                    await _renderRouteOnMap(r);
+                                    if (mounted) Navigator.of(context).pop();
+
                                     await _renderRouteOnMap(r);
                                     if (mounted) Navigator.of(context).pop();
                                     await _showTripPreviewForRoute(
