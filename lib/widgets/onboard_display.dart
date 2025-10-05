@@ -1,4 +1,3 @@
-// lib/widgets/metro/onboard_display.dart
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
@@ -20,6 +19,7 @@ class MetroStop {
 
 Future<void> showOnboardDisplay(
   BuildContext context, {
+  // REQUIRED (same as before)
   required List<MetroStop> stops,
   required int currentIndex,
   required String lineKey,
@@ -28,7 +28,19 @@ Future<void> showOnboardDisplay(
   String? directionNameAr,
   Duration? etaToNext,
   bool isRTL = false,
-  bool forward = true, // direction along the line
+  bool forward = true,
+
+  // Keeps sheet in sync with banner
+  String? nextStationOverride,
+
+  // Optional “full line / next line” support (unchanged)
+  List<MetroStop>? fullLineStops,
+  bool autoBuildSegmentFromFull = true,
+  List<MetroStop>? nextLinePreviewStops,
+  String? nextLineKey,
+  Color? nextLineColor,
+  String? nextDirectionNameEn,
+  String? nextDirectionNameAr,
 }) async {
   assert(stops.isNotEmpty);
   currentIndex = currentIndex.clamp(0, stops.length - 1);
@@ -44,6 +56,7 @@ Future<void> showOnboardDisplay(
       return Directionality(
         textDirection: isRTL ? TextDirection.rtl : TextDirection.ltr,
         child: _OnboardPanel(
+          // base (current line)
           stops: stops,
           currentIndex: currentIndex,
           lineKey: lineKey,
@@ -53,11 +66,25 @@ Future<void> showOnboardDisplay(
           etaToNext: etaToNext,
           isRTL: isRTL,
           forward: forward,
+          nextStationOverride: nextStationOverride,
+
+          // toggles (optional)
+          fullLineStops: fullLineStops,
+          autoBuildSegmentFromFull: autoBuildSegmentFromFull,
+
+          // next line preview (optional)
+          nextLinePreviewStops: nextLinePreviewStops,
+          nextLineKey: nextLineKey,
+          nextLineColor: nextLineColor,
+          nextDirectionNameEn: nextDirectionNameEn,
+          nextDirectionNameAr: nextDirectionNameAr,
         ),
       );
     },
   );
 }
+
+enum _ViewMode { segment, fullLine, nextLine }
 
 class _OnboardPanel extends StatefulWidget {
   const _OnboardPanel({
@@ -70,6 +97,14 @@ class _OnboardPanel extends StatefulWidget {
     this.directionNameEn,
     this.directionNameAr,
     this.etaToNext,
+    this.nextStationOverride,
+    this.fullLineStops,
+    this.autoBuildSegmentFromFull = true,
+    this.nextLinePreviewStops,
+    this.nextLineKey,
+    this.nextLineColor,
+    this.nextDirectionNameEn,
+    this.nextDirectionNameAr,
   });
 
   final List<MetroStop> stops;
@@ -81,6 +116,16 @@ class _OnboardPanel extends StatefulWidget {
   final Duration? etaToNext;
   final bool isRTL;
   final bool forward;
+  final String? nextStationOverride;
+
+  final List<MetroStop>? fullLineStops;
+  final bool autoBuildSegmentFromFull;
+
+  final List<MetroStop>? nextLinePreviewStops;
+  final String? nextLineKey;
+  final Color? nextLineColor;
+  final String? nextDirectionNameEn;
+  final String? nextDirectionNameAr;
 
   @override
   State<_OnboardPanel> createState() => _OnboardPanelState();
@@ -88,21 +133,33 @@ class _OnboardPanel extends StatefulWidget {
 
 class _OnboardPanelState extends State<_OnboardPanel>
     with SingleTickerProviderStateMixin {
+  // Slightly quicker loop, and with a curve for smoother motion.
   late final AnimationController _ctrl =
-      AnimationController(vsync: this, duration: const Duration(seconds: 6))
+      AnimationController(vsync: this, duration: const Duration(seconds: 4))
         ..repeat();
+  late final Animation<double> _curve =
+      CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
 
   final _scrollCtrl = ScrollController();
+  late _ViewMode _mode;
 
   @override
   void initState() {
     super.initState();
+    _mode = _initialMode();
     WidgetsBinding.instance.addPostFrameCallback((_) => _centerCurrent());
+  }
+
+  _ViewMode _initialMode() {
+    if (widget.fullLineStops != null && widget.autoBuildSegmentFromFull) {
+      return _ViewMode.segment;
+    }
+    return _ViewMode.segment;
   }
 
   void _centerCurrent() {
     const itemExtent = 120.0;
-    final idx = widget.currentIndex.toDouble();
+    final idx = _derivedCurrentIndex().toDouble();
     final target = (idx * itemExtent) -
         (MediaQuery.of(context).size.width / 2) +
         (itemExtent / 2);
@@ -119,26 +176,174 @@ class _OnboardPanelState extends State<_OnboardPanel>
     super.dispose();
   }
 
+  // ---------------- data per mode ----------------
+  List<MetroStop> _activeStops() {
+    switch (_mode) {
+      case _ViewMode.segment:
+        if (widget.fullLineStops != null &&
+            widget.fullLineStops!.isNotEmpty &&
+            widget.autoBuildSegmentFromFull) {
+          return _segmentFromFull(
+            widget.fullLineStops!,
+            _fullIndexFromIdOrName(widget.stops[widget.currentIndex]),
+            forward: widget.forward,
+          );
+        }
+        return widget.stops;
+      case _ViewMode.fullLine:
+        return (widget.fullLineStops != null &&
+                widget.fullLineStops!.isNotEmpty)
+            ? widget.fullLineStops!
+            : widget.stops;
+      case _ViewMode.nextLine:
+        return widget.nextLinePreviewStops ?? const <MetroStop>[];
+    }
+  }
+
+  String _activeLineKey() => _mode == _ViewMode.nextLine
+      ? (widget.nextLineKey ?? widget.lineKey)
+      : widget.lineKey;
+
+  Color _activeLineColor() => _mode == _ViewMode.nextLine
+      ? (widget.nextLineColor ?? widget.lineColor)
+      : widget.lineColor;
+
+  String _activeDirEn(List<MetroStop> stops) {
+    if (_mode == _ViewMode.nextLine) {
+      return widget.nextDirectionNameEn ??
+          (stops.isNotEmpty ? 'To ${stops.last.nameEn}' : '');
+    }
+    return widget.directionNameEn ??
+        (widget.forward
+            ? 'To ${stops.last.nameEn}'
+            : 'To ${stops.first.nameEn}');
+  }
+
+  String _activeDirAr(List<MetroStop> stops) {
+    if (_mode == _ViewMode.nextLine) {
+      return widget.nextDirectionNameAr ??
+          (stops.isNotEmpty ? 'إلى ${stops.last.nameAr}' : '');
+    }
+    return widget.directionNameAr ??
+        (widget.forward
+            ? 'إلى ${stops.last.nameAr}'
+            : 'إلى ${stops.first.nameAr}');
+  }
+
+  bool get _hasFullLine =>
+      (widget.fullLineStops != null && widget.fullLineStops!.length >= 2);
+  bool get _hasNextLine => (widget.nextLinePreviewStops != null &&
+      widget.nextLinePreviewStops!.isNotEmpty);
+
+  // ------------- helpers -------------
+  int _fullIndexFromIdOrName(MetroStop s) {
+    final list = widget.fullLineStops ?? widget.stops;
+    final byId = list.indexWhere((x) => x.id == s.id);
+    if (byId != -1) return byId;
+    final byName = list.indexWhere((x) =>
+        x.nameEn.toLowerCase() == s.nameEn.toLowerCase() ||
+        x.nameAr.toLowerCase() == s.nameAr.toLowerCase());
+    return (byName != -1) ? byName : 0;
+  }
+
+  List<MetroStop> _segmentFromFull(
+    List<MetroStop> full,
+    int startIdx, {
+    required bool forward,
+  }) {
+    int a = startIdx;
+    int b = startIdx;
+
+    bool atTerminal(int i) => i <= 0 || i >= full.length - 1;
+
+    int i = startIdx;
+    while (true) {
+      final last = (i >= full.length - 1);
+      if (last) break;
+      final nextIsTransfer =
+          full[i + 1].isTransfer || full[i + 1].transferLines.isNotEmpty;
+      b = i + 1;
+      if (nextIsTransfer || atTerminal(b)) break;
+      i++;
+    }
+
+    a = (a - 1).clamp(0, b);
+    return full.sublist(a, b + 1);
+  }
+
+  /// Uses nextStationOverride (if any) to **derive** the effective current index,
+  /// so the timeline highlight matches the green banner’s “Next station”.
+  int _derivedCurrentIndex() {
+    final stops = _activeStops();
+
+    // Start from default current index per mode
+    int baseCurrent;
+    switch (_mode) {
+      case _ViewMode.segment:
+        if (widget.fullLineStops != null &&
+            widget.fullLineStops!.isNotEmpty &&
+            widget.autoBuildSegmentFromFull) {
+          baseCurrent = 0; // rider anchored at 0 in the sliced segment
+        } else {
+          baseCurrent = widget.currentIndex.clamp(0, stops.length - 1);
+        }
+        break;
+      case _ViewMode.fullLine:
+        if (widget.fullLineStops != null && widget.fullLineStops!.isNotEmpty) {
+          baseCurrent =
+              _fullIndexFromIdOrName(widget.stops[widget.currentIndex])
+                  .clamp(0, stops.length - 1);
+        } else {
+          baseCurrent = widget.currentIndex.clamp(0, stops.length - 1);
+        }
+        break;
+      case _ViewMode.nextLine:
+        baseCurrent = 0;
+        break;
+    }
+
+    // If there’s an explicit next station from the banner, derive current from it.
+    if (widget.nextStationOverride != null &&
+        widget.nextStationOverride!.trim().isNotEmpty &&
+        stops.isNotEmpty) {
+      final want = widget.nextStationOverride!.trim().toLowerCase();
+      final nextIdx = stops.indexWhere((s) =>
+          s.nameEn.toLowerCase() == want || s.nameAr.toLowerCase() == want);
+      if (nextIdx != -1) {
+        final derived = widget.forward ? (nextIdx - 1) : (nextIdx + 1);
+        return derived.clamp(0, stops.length - 1);
+      }
+    }
+
+    return baseCurrent;
+  }
+
+  int _derivedNextIndex(int currentIdx, int total) {
+    return widget.forward
+        ? (currentIdx + 1).clamp(0, total - 1)
+        : (currentIdx - 1).clamp(0, total - 1);
+  }
+
+  // -------- build --------
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
     final isDark = t.brightness == Brightness.dark;
 
-    final int nextIndex = widget.forward
-        ? (widget.currentIndex + 1).clamp(0, widget.stops.length - 1)
-        : (widget.currentIndex - 1).clamp(0, widget.stops.length - 1);
-    final nextStop = widget.stops[nextIndex];
+    final activeStops = _activeStops();
+    final currentIdx = _derivedCurrentIndex();
+    final nextIdx = _derivedNextIndex(currentIdx, activeStops.length);
 
-    final String dirTextEn = widget.directionNameEn ??
-        (widget.forward
-            ? 'To ${widget.stops.last.nameEn}'
-            : 'To ${widget.stops.first.nameEn}');
-    final String dirTextAr = widget.directionNameAr ??
-        (widget.forward
-            ? 'إلى ${widget.stops.last.nameAr}'
-            : 'إلى ${widget.stops.first.nameAr}');
+    final lineKey = _activeLineKey();
+    final lineColor = _activeLineColor();
+    final dirTextEn = _activeDirEn(activeStops);
+    final dirTextAr = _activeDirAr(activeStops);
 
-    final hasTransfers = widget.stops.any((s) => s.transferLines.isNotEmpty);
+    final nextStop = activeStops.isNotEmpty
+        ? activeStops[nextIdx]
+        : MetroStop(id: 'n/a', nameEn: '-', nameAr: '-');
+
+    final hasTransfers = activeStops.any((s) => s.transferLines.isNotEmpty);
     final double timelineH = hasTransfers ? 150.0 : 120.0;
 
     return SafeArea(
@@ -163,7 +368,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
                   width: 12,
                   height: 36,
                   decoration: BoxDecoration(
-                    color: widget.lineColor,
+                    color: lineColor,
                     borderRadius: BorderRadius.circular(6),
                   ),
                 ),
@@ -172,7 +377,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Line ${widget.lineKey}',
+                      Text('Line $lineKey',
                           style: t.textTheme.titleMedium
                               ?.copyWith(fontWeight: FontWeight.w700)),
                       const SizedBox(height: 2),
@@ -196,19 +401,59 @@ class _OnboardPanelState extends State<_OnboardPanel>
                   ),
               ],
             ),
+
+            if (_hasFullLine || _hasNextLine) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                children: [
+                  if (_hasFullLine)
+                    ChoiceChip(
+                      selected: _mode == _ViewMode.segment,
+                      label: const Text('Segment'),
+                      onSelected: (_) => setState(() {
+                        _mode = _ViewMode.segment;
+                        _centerCurrent();
+                      }),
+                    ),
+                  if (_hasFullLine)
+                    ChoiceChip(
+                      selected: _mode == _ViewMode.fullLine,
+                      label: const Text('Full line'),
+                      onSelected: (_) => setState(() {
+                        _mode = _ViewMode.fullLine;
+                        _centerCurrent();
+                      }),
+                    ),
+                  if (_hasNextLine)
+                    ChoiceChip(
+                      selected: _mode == _ViewMode.nextLine,
+                      label: const Text('Next line'),
+                      onSelected: (_) => setState(() {
+                        _mode = _ViewMode.nextLine;
+                        _centerCurrent();
+                      }),
+                    ),
+                ],
+              ),
+            ],
+
             const SizedBox(height: 16),
+
+            // Timeline
             SizedBox(
               height: timelineH,
               child: AnimatedBuilder(
-                animation: _ctrl,
+                animation: _curve,
                 builder: (context, _) {
+                  final animT = _curve.value; // 0..1 curved
                   return Stack(
                     children: [
                       Positioned.fill(
                         child: IgnorePointer(
                           child: CustomPaint(
-                            painter: _BaselinePainter(
-                                widget.lineColor.withOpacity(0.35)),
+                            painter:
+                                _BaselinePainter(lineColor.withOpacity(0.35)),
                           ),
                         ),
                       ),
@@ -216,27 +461,28 @@ class _OnboardPanelState extends State<_OnboardPanel>
                         controller: _scrollCtrl,
                         scrollDirection: Axis.horizontal,
                         itemExtent: 120,
-                        itemCount: widget.stops.length,
+                        itemCount: activeStops.length,
                         itemBuilder: (context, i) {
-                          final stop = widget.stops[i];
-                          final isCurrent = i == widget.currentIndex;
-                          final isPassed = widget.forward
-                              ? i < widget.currentIndex
-                              : i > widget.currentIndex;
-                          final isNext = i == nextIndex;
+                          final stop = activeStops[i];
+                          final isCurrent = i == currentIdx;
+                          final isPassed =
+                              widget.forward ? i < currentIdx : i > currentIdx;
+                          final isNext = i == nextIdx;
 
                           return _StationColumn(
                             stop: stop,
-                            lineColor: widget.lineColor,
+                            lineColor: lineColor,
                             state: isCurrent
                                 ? StationState.current
                                 : (isPassed
                                     ? StationState.passed
                                     : StationState.upcoming),
-                            showTrainHere: isCurrent || isNext,
-                            trainT: (isCurrent
-                                ? _ctrl.value
-                                : (isNext ? (1 - _ctrl.value) : 0)),
+                            // show moving elements on current & next
+                            showTrainHere: isCurrent, // 👈 only on current stop
+                            trainT: animT,
+                            // extra animation phase for pulse/chevrons
+                            animPhase: animT,
+                            isNextDot: isNext,
                             rtl: widget.isRTL,
                             forward: widget.forward,
                           );
@@ -247,12 +493,14 @@ class _OnboardPanelState extends State<_OnboardPanel>
                 },
               ),
             ),
+
             const SizedBox(height: 6),
+
             _NextCard(
               title: widget.isRTL ? 'المحطة التالية' : 'Next station',
               name: widget.isRTL ? nextStop.nameAr : nextStop.nameEn,
               transfers: nextStop.transferLines,
-              accent: widget.lineColor,
+              accent: lineColor,
             ),
           ],
         ),
@@ -275,6 +523,8 @@ class _StationColumn extends StatelessWidget {
     required this.state,
     required this.showTrainHere,
     required this.trainT,
+    required this.animPhase,
+    required this.isNextDot,
     required this.rtl,
     required this.forward,
   });
@@ -283,7 +533,10 @@ class _StationColumn extends StatelessWidget {
   final Color lineColor;
   final StationState state;
   final bool showTrainHere;
-  final double trainT;
+  final double trainT; // 0..1 travel between current & next
+  final double animPhase; // 0..1 loop for pulse/chevrons
+  final bool isNextDot;
+
   final bool rtl;
   final bool forward;
 
@@ -308,8 +561,64 @@ class _StationColumn extends StatelessWidget {
 
     // direction-aware movement independent of RTL labels
     final int dirSign = (forward ? 1 : -1) * (rtl ? -1 : 1);
-    final double trainDx = 60 + dirSign * 40 * trainT;
+
+    // Train x-position (inside the 100px station cell)
+    final double trainDx = 50 + dirSign * 42 * trainT; // center ± 42px
     final bool faceLeft = (!forward && !rtl) || (forward && rtl);
+
+    // Subtle bob for train
+    final double bob = math.sin(animPhase * 2 * math.pi) * 1.5;
+
+    // Chevron flow (3 chevrons drifting from current→next)
+    // spacing & base position tuned for 100x34 dot area
+    List<Widget> _chevrons() {
+      const int count = 3;
+      const double spacing = 14;
+      // phase shift makes them loop; convert to -1..1 then map to 0..(count+1)
+      final double p = animPhase;
+      final double head = (p * (count + 1)); // 0..count+1
+      final List<Widget> list = [];
+      for (int i = 0; i < count; i++) {
+        // chevron index position relative to head
+        final double k = head - i;
+        // 0..1 visible window
+        final double vis = k.clamp(0, 1);
+        final double alpha = (1 - (k - vis).abs()).clamp(0, 1);
+        final double offset = 50 + dirSign * (18 + spacing * i + 28 * vis);
+        list.add(Positioned(
+          left: rtl ? null : offset,
+          right: rtl ? offset : null,
+          child: Opacity(
+            opacity: 0.15 + 0.55 * alpha,
+            child: Transform(
+              alignment: Alignment.center,
+              transform: Matrix4.rotationY(faceLeft ? math.pi : 0),
+              child: const Icon(Icons.chevron_right, size: 16),
+            ),
+          ),
+        ));
+      }
+      return list;
+    }
+
+    // Pulse for “next” station (concentric waves)
+    Widget _nextPulse() {
+      // 0..1..0 wave
+      final double wave = (math.sin(animPhase * 2 * math.pi) + 1) / 2;
+      final double r = 12 + 6 * wave; // radius 12..18
+      return IgnorePointer(
+        child: Container(
+          width: r * 2,
+          height: r * 2,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(
+                color: lineColor.withOpacity(0.35 + 0.25 * (1 - wave)),
+                width: 2),
+          ),
+        ),
+      );
+    }
 
     const double nameH = 34;
     const double dotAreaH = 34;
@@ -322,11 +631,13 @@ class _StationColumn extends StatelessWidget {
           SizedBox(
             width: 100,
             height: nameH,
-            child: Text(name,
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: labelStyle),
+            child: Text(
+              name,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: labelStyle,
+            ),
           ),
           const SizedBox(height: 4),
           SizedBox(
@@ -335,33 +646,63 @@ class _StationColumn extends StatelessWidget {
             child: Stack(
               alignment: Alignment.center,
               children: [
+                // Pulsing hint on the next station
+                if (isNextDot)
+                  Positioned(
+                    child: _nextPulse(),
+                  ),
+
+                // Base dot
                 Container(
                   width: state == StationState.current ? 14 : 10,
                   height: state == StationState.current ? 14 : 10,
                   decoration: BoxDecoration(
                     color: dotColor,
                     border: Border.all(
-                        color: lineColor,
-                        width: state == StationState.current ? 2 : 1),
+                      color: lineColor,
+                      width: state == StationState.current ? 2 : 1,
+                    ),
                     shape: BoxShape.circle,
                     boxShadow: state == StationState.current
                         ? [
                             BoxShadow(
-                                color: lineColor.withOpacity(0.5),
-                                blurRadius: 8)
+                              color: lineColor.withOpacity(0.45),
+                              blurRadius: 10,
+                              spreadRadius: 0.5,
+                            )
                           ]
                         : null,
                   ),
                 ),
+
+                // Directional chevrons flowing towards next
+                if (showTrainHere) ..._chevrons(),
+
+                // Moving train (with soft shadow and bob)
                 if (showTrainHere)
                   Positioned(
                     left: rtl ? null : trainDx,
                     right: rtl ? trainDx : null,
-                    child: Transform(
-                      alignment: Alignment.center,
-                      transform: Matrix4.rotationY(faceLeft ? math.pi : 0),
-                      child: Icon(Icons.directions_subway_filled,
-                          size: 18, color: lineColor),
+                    top: bob, // small vertical bob
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        boxShadow: [
+                          BoxShadow(
+                            color: lineColor.withOpacity(0.35),
+                            blurRadius: 8,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
+                      ),
+                      child: Transform(
+                        alignment: Alignment.center,
+                        transform: Matrix4.rotationY(faceLeft ? math.pi : 0),
+                        child: Icon(
+                          Icons.directions_subway_filled,
+                          size: 18,
+                          color: lineColor,
+                        ),
+                      ),
                     ),
                   ),
               ],
@@ -516,10 +857,10 @@ class _NextCard extends StatelessWidget {
                 if (transfers.isNotEmpty) ...[
                   const SizedBox(height: 6),
                   Wrap(
-                      spacing: 6,
-                      children: transfers
-                          .map((l) => _TransferBadge(line: l))
-                          .toList()),
+                    spacing: 6,
+                    children:
+                        transfers.map((l) => _TransferBadge(line: l)).toList(),
+                  ),
                 ],
               ],
             ),

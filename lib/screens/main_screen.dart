@@ -91,6 +91,8 @@ enum _ActiveField { none, origin, destination }
 
 enum _TripMode { metro, drive }
 
+enum NavHintType { walk, board, transfer, alight }
+
 class MainScreen extends StatefulWidget {
   final String firstName;
   final bool emailVerified;
@@ -103,6 +105,107 @@ class MainScreen extends StatefulWidget {
 
 class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   AppLifecycleState _lifecycle = AppLifecycleState.resumed;
+  // --- NAV HINT (floating card) -----------------------------------------------
+// --- Nav prompt guards ---
+  bool _walkFirstPromptDone =
+      false; // shown "walk to first" and/or reached first station
+  final Set<String> _transferNextShown =
+      {}; // track which "transfer at next" prompts we already showed
+
+  OverlayEntry? _navHintEntry;
+
+  void _showNavHint(
+    NavHintType type,
+    String text, {
+    Duration duration = const Duration(seconds: 4),
+  }) {
+    // Close any currently visible hint
+    _navHintEntry?.remove();
+    _navHintEntry = null;
+
+    Color bg;
+    IconData icon;
+    switch (type) {
+      case NavHintType.walk:
+        bg = const Color(0xFF263238);
+        icon = Icons.directions_walk_rounded;
+        break;
+      case NavHintType.board:
+        bg = const Color(0xFF1B5E20);
+        icon = Icons.directions_subway_filled;
+        break;
+      case NavHintType.transfer:
+        bg = const Color(0xFFFB8C00);
+        icon = Icons.swap_horiz_rounded;
+        break;
+      case NavHintType.alight:
+        bg = const Color(0xFFE53935);
+        icon = Icons.flag_rounded;
+        break;
+    }
+
+    final entry = OverlayEntry(
+      builder: (ctx) => Positioned(
+        left: 12,
+        right: 12,
+        bottom: 96, // sits above FABs / bottom nav
+        child: SafeArea(
+          top: false,
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              decoration: BoxDecoration(
+                color: bg,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: const [
+                  BoxShadow(
+                      blurRadius: 12,
+                      color: Colors.black26,
+                      offset: Offset(0, 6)),
+                ],
+              ),
+              child: Row(
+                children: [
+                  Icon(icon, color: Colors.white, size: 20),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      text,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white, fontWeight: FontWeight.w700),
+                    ),
+                  ),
+                  IconButton(
+                    splashRadius: 18,
+                    padding: EdgeInsets.zero,
+                    onPressed: () {
+                      _navHintEntry?.remove();
+                      _navHintEntry = null;
+                    },
+                    icon: const Icon(Icons.close_rounded,
+                        color: Colors.white70, size: 20),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    Overlay.of(context, rootOverlay: true).insert(entry);
+    _navHintEntry = entry;
+
+    Future.delayed(duration, () {
+      if (_navHintEntry == entry) {
+        _navHintEntry?.remove();
+        _navHintEntry = null;
+      }
+    });
+  }
 
   bool get _isInForeground => _lifecycle == AppLifecycleState.resumed;
   // === Metro ETA model (average run + dwell at stops) ===
@@ -666,6 +769,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _nearNextSince = null;
     _nextMinDist = double.infinity;
 
+    // >>> NEW: prompt-guards (ensure walk-to-first & transfer-next don’t repeat)
+    _walkFirstPromptDone = false;
+    _transferNextShown.clear();
+    // <<<
+
     _tripDestLabel =
         _destCtrl.text.isNotEmpty ? _destCtrl.text : _tripDestLabel;
     _tripDestLL = _userDestination;
@@ -682,12 +790,44 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _tripDistance = 0;
     _lastNavPoint = null;
 
+    // Collect metro “context” for history (safe if not in metro)
+    final List<String> _chosenLines = (_lastChosenRoute?.lineSequence ?? [])
+        .map((s) => s.toString())
+        .toList();
+
+    String? _fromStationName;
+    String? _toStationName;
+    if (_lastChosenRoute != null) {
+      // first & last metro nodes on the chosen route
+      final firstMetroId = _lastChosenRoute!.nodeIds.firstWhere(
+        (id) => id.contains(':'),
+        orElse: () => '',
+      );
+      final lastMetroId = _lastChosenRoute!.nodeIds.reversed.firstWhere(
+        (id) => id.contains(':'),
+        orElse: () => '',
+      );
+      if (firstMetroId.isNotEmpty) {
+        _fromStationName = _lastChosenRoute!.nodes[firstMetroId]?.name;
+      }
+      if (lastMetroId.isNotEmpty) {
+        _toStationName = _lastChosenRoute!.nodes[lastMetroId]?.name;
+      }
+    }
+
     _activeTripId = await _travelSvc.startTrip(
-      mode: modeStr,
+      mode: modeStr, // 'metro' | 'car'
       originLabel: _tripOriginLabel,
       destLabel: _tripDestLabel,
       originLL: _tripOriginLL,
       destLL: _tripDestLL,
+      metroLineKeys: (_tripMode == _TripMode.metro)
+          ? (_chosenLines
+              ?.map((s) => s.isEmpty ? s : s[0].toUpperCase() + s.substring(1))
+              .toList())
+          : null,
+      fromStation: (_tripMode == _TripMode.metro) ? _fromStationName : null,
+      toStation: (_tripMode == _TripMode.metro) ? _toStationName : null,
       startedAt: _tripStartAt,
     );
 
@@ -759,10 +899,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           first.pos.latitude,
           first.pos.longitude,
         );
-        // if (d > 150) {
-        //   _notify(
-        //       'Walk to ${first.name} to board the ${first.lineKey[0].toUpperCase()}${first.lineKey.substring(1)} ${getTranslated(context, "line")}');
-        // }
+        // (no immediate snackbar here; alerts handled in stream)
       }
     }
 
@@ -778,7 +915,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final Map<String, DateTime> _alertShownAt = {};
     const Duration _alertCooldown = Duration(seconds: 45);
 
-    void _notifyOnce(String key, String message) {
+    // >>> NEW: foreground uses floating hint; timing and de-dupe preserved
+    void _notifyOnce(String key, String message,
+        {NavHintType type = NavHintType.walk}) {
       // Don't nag when not actually navigating (prevents spam on the Home sheet)
       if (!_navigating) return;
 
@@ -789,11 +928,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
         // Show in-app (only if we're visible) AND always post a local notification
         if (_isInForeground && mounted) {
-          _notify(message); // your existing snackbar/toast
+          _showNavHint(type, message); // floating hint (no SnackBar)
+          HapticFeedback.selectionClick();
         }
         AppLocalNotifications.show(body: message); // works in background/closed
       }
     }
+    // <<<
 
     _uiNavSub = _bgNav.updates.listen((u) async {
       final now = DateTime.now();
@@ -943,10 +1084,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
       if (canAdvanceMetro) {
         _metroLeg = _metroLeg.clamp(0, _metroSeq.length - 2);
-        final StationNode next = _metroSeq[_metroLeg + 1];
+        final StationNode nextSt = _metroSeq[_metroLeg + 1];
 
         final double dNext = Geolocator.distanceBetween(uiPos.latitude,
-            uiPos.longitude, next.pos.latitude, next.pos.longitude);
+            uiPos.longitude, nextSt.pos.latitude, nextSt.pos.longitude);
 
         _nextMinDist = math.min(_nextMinDist, dNext);
 
@@ -1023,30 +1164,48 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _transferToLineKey = transferToLine;
         _metroAlightAtNext = alightAtNext;
 
-        // A) BEFORE BOARDING: tell user to walk to the first station (once)
+        // A) BEFORE BOARDING: show “Walk to FIRST station …” once and never again
         final StationNode first = _metroSeq.first;
-        final bool beforeBoard =
-            _metroLeg == 0; // still not left the first node
-        final double dToFirst = Geolocator.distanceBetween(uiPos.latitude,
-            uiPos.longitude, first.pos.latitude, first.pos.longitude);
-        if (beforeBoard && dToFirst > 120.0) {
-          final msg =
-              '${getTranslated(context, "Walk to")} ${first.name} ${getTranslated(context, "to board the")} ${getTranslated(context, currLine)}';
-          _notifyOnce('walk_board_${first.id}_$currLine', msg);
+        final bool stillBeforeBoard =
+            (_metroLeg == 0); // not yet left first node
+        final double dToFirst = Geolocator.distanceBetween(
+          uiPos.latitude,
+          uiPos.longitude,
+          first.pos.latitude,
+          first.pos.longitude,
+        );
+
+        // If you’re basically at the first station, lock out the prompt forever
+        if (dToFirst < 80.0) {
+          _walkFirstPromptDone = true;
         }
 
-        // B) TRANSFER HERE alert (once per transfer station)
-        if (transferAtNext && _metroLeg >= 1 && transferToLine != null) {
-          final msg =
-              '${getTranslated(context, "Change line here")} → ${getTranslated(context, transferToLine)} ${getTranslated(context, "line")}';
-          _notifyOnce('transfer_${next.id}_$transferToLine', msg);
+        if (stillBeforeBoard && !_walkFirstPromptDone && dToFirst > 120.0) {
+          final msg = '${getTranslated(context, "Walk to")} ${first.name} '
+              '${getTranslated(context, "to board the")} ${getTranslated(context, currLine)}';
+          _notifyOnce('walk_board_once_${first.id}_$currLine', msg,
+              type: NavHintType.board);
+          _walkFirstPromptDone = true; // mark as shown immediately
         }
 
-        // C) ALIGHT AT NEXT alert (only after we’ve boarded)
+        // B) TRANSFER: announce one-stop ahead (like “Alight at next station”)
+        if (transferAtNext && transferToLine != null) {
+          final key = 'xfer_next_${next.id}_$transferToLine';
+          if (!_transferNextShown.contains(key)) {
+            final msg =
+                '${getTranslated(context, "Change line at next station")} → '
+                '${getTranslated(context, transferToLine)}}';
+            _notifyOnce(key, msg, type: NavHintType.transfer);
+            _transferNextShown.add(key);
+          }
+        }
+
+        // C) ALIGHT AT NEXT (one-stop-ahead)
         if (alightAtNext && _metroLeg >= 1) {
           _notifyOnce(
             'alight_${next.id}',
             getTranslated(context, 'Alight at next station'),
+            type: NavHintType.alight,
           );
         }
       }
@@ -3186,7 +3345,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         if (_checkingLocation)
           const Positioned.fill(
             child: IgnorePointer(
-              child: MapLoadingShimmer(),
+              child: DecoratedBox(
+                decoration: BoxDecoration(color: Colors.transparent),
+                child: Center(child: CircularProgressIndicator(strokeWidth: 2)),
+              ),
             ),
           ),
 
@@ -3606,11 +3768,18 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                       lineColor: lineColor,
                                       directionNameEn: dirEn,
                                       directionNameAr: dirAr,
-                                      etaToNext: const Duration(minutes: 1),
+                                      etaToNext: Duration(
+                                        seconds:
+                                            (_etaSecondsMetro(uiPos: _lastFixLL)
+                                                    as num)
+                                                .round(),
+                                      ),
                                       isRTL: Localizations.localeOf(context)
                                               .languageCode ==
                                           'ar',
                                       forward: forward,
+                                      nextStationOverride:
+                                          _metroNextName, // ✅ ensures sync with green banner
                                     );
                                   },
                                   child: _pill(

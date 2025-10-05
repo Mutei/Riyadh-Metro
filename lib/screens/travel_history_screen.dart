@@ -41,7 +41,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   bool _selectionMode = false;
   final Set<String> _selectedIds = {};
 
-  // Helpers -------------------------------------------------------------------
+  // ---- Helpers --------------------------------------------------------------
 
   String tr(String key, String fb) {
     final s = getTranslated(context, key);
@@ -89,7 +89,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     super.dispose();
   }
 
-  // Filtering / sorting -------------------------------------------------------
+  // ---- Filtering / sorting --------------------------------------------------
 
   void _applyFilterSort() {
     Iterable<TravelEntry> it = _all;
@@ -99,13 +99,21 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
       it = it.where((e) => e.mode == _mode);
     }
 
-    // Query (origin or destination contains)
+    // Query (origin/destination OR station OR line)
     final q = _query.trim().toLowerCase();
     if (q.isNotEmpty) {
       it = it.where((e) {
         final a = (e.originLabel ?? '').toLowerCase();
         final b = (e.destLabel ?? '').toLowerCase();
-        return a.contains(q) || b.contains(q);
+        final fs = (e.fromStation ?? '').toLowerCase();
+        final ts = (e.toStation ?? '').toLowerCase();
+        final lines =
+            (e.metroLineKeys ?? const []).map((s) => s.toLowerCase()).join(' ');
+        return a.contains(q) ||
+            b.contains(q) ||
+            fs.contains(q) ||
+            ts.contains(q) ||
+            lines.contains(q);
       });
     }
 
@@ -182,7 +190,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     }
   }
 
-  // Selection helpers ---------------------------------------------------------
+  // ---- Selection helpers ----------------------------------------------------
 
   void _enterSelection(TravelEntry e) {
     setState(() {
@@ -263,7 +271,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     }
   }
 
-  // UI ------------------------------------------------------------------------
+  // ---- UI -------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
@@ -316,6 +324,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                         tr('filter.sort.shortest', 'Shortest time')),
                     _sortItem(_Sort.longestDistance,
                         tr('filter.sort.longest', 'Longest distance')),
+//                   ],
                   ],
                   icon: const Icon(Icons.sort_rounded),
                 ),
@@ -497,6 +506,52 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     }).toList();
   }
 
+  // Metro line color palette (fallback to teal if unknown)
+  Color _lineColor(String key) {
+    switch (key.toLowerCase()) {
+      case 'blue':
+        return const Color(0xFF1976D2);
+      case 'red':
+        return const Color(0xFFD32F2F);
+      case 'green':
+        return const Color(0xFF388E3C);
+      case 'yellow':
+        return const Color(0xFFF9A825);
+      case 'orange':
+        return const Color(0xFFEF6C00);
+      case 'purple':
+        return const Color(0xFF7B1FA2);
+      default:
+        return const Color(0xFF00897B);
+    }
+  }
+
+  Widget _lineChip(String key) {
+    final text = key.isNotEmpty
+        ? '${key[0].toUpperCase()}${key.substring(1).toLowerCase()}'
+        : key;
+    final c = _lineColor(text);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: c.withOpacity(0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+          const SizedBox(width: 6),
+          Text(text, style: TextStyle(fontWeight: FontWeight.w700, color: c)),
+        ],
+      ),
+    );
+  }
+
   Widget _tripCard(TravelEntry e) {
     final isCar = e.mode == 'car';
     final accent = isCar ? const Color(0xFF1976D2) : const Color(0xFF00897B);
@@ -506,6 +561,8 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     final startTime = _fmtTime(e.startedAt);
     final endTime =
         e.finishedAt != null ? _fmtTime(e.finishedAt!) : tr('—', '—');
+
+    final lines = e.metroLineKeys ?? const [];
 
     return InkWell(
       onLongPress: () => _enterSelection(e),
@@ -533,88 +590,121 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
           ],
         ),
         padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-        child: Row(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            if (_selectionMode)
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Checkbox(
-                  value: selected,
-                  onChanged: (_) => _toggleSelect(e),
-                ),
-              ),
-            Container(
-              width: 46,
-              height: 46,
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: [accent, accent.withOpacity(0.65)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                ),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(
-                isCar
-                    ? Icons.directions_car_filled
-                    : Icons.directions_subway_filled,
-                color: Colors.white,
-              ),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Title
-                  Text(
-                    e.destLabel?.trim().isNotEmpty == true
-                        ? e.destLabel!.trim()
-                        : tr('Destination', 'Destination'),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w800,
-                      color: Color(0xFF1B1B1B),
+            Row(
+              children: [
+                if (_selectionMode)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: Checkbox(
+                      value: selected,
+                      onChanged: (_) => _toggleSelect(e),
                     ),
                   ),
-                  const SizedBox(height: 4),
-                  // Subline
-                  Text(
-                    '${e.originLabel?.trim().isNotEmpty == true ? e.originLabel!.trim() : tr("From my location", "From my location")} → ${e.destLabel?.trim().isNotEmpty == true ? e.destLabel!.trim() : tr("Destination", "Destination")}',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(color: Colors.black54),
+                Container(
+                  width: 46,
+                  height: 46,
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      colors: [accent, accent.withOpacity(0.65)],
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                    ),
+                    borderRadius: BorderRadius.circular(12),
                   ),
-                  const SizedBox(height: 6),
-                  // Chips row
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 6,
-                    crossAxisAlignment: WrapCrossAlignment.center,
+                  child: Icon(
+                    isCar
+                        ? Icons.directions_car_filled
+                        : Icons.directions_subway_filled,
+                    color: Colors.white,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _chip(
-                          icon: Icons.schedule,
-                          text: _fmtDuration(e.durationSeconds)),
-                      _chip(
-                          icon: Icons.pin_drop_outlined,
-                          text: fmtMeters(e.distanceMeters.toDouble())),
-                      // NEW: Start / End times
-                      _chip(
-                          icon: Icons.play_arrow_rounded,
-                          text: '${tr("Start", "Start")}: $startTime'),
-                      _chip(
-                          icon: Icons.stop_rounded,
-                          text: '${tr("End", "End")}: $endTime'),
+                      // Title
+                      Text(
+                        e.destLabel?.trim().isNotEmpty == true
+                            ? e.destLabel!.trim()
+                            : tr('Destination', 'Destination'),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w800,
+                          color: Color(0xFF1B1B1B),
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      // Subline
+                      Text(
+                        '${e.originLabel?.trim().isNotEmpty == true ? e.originLabel!.trim() : tr("From my location", "From my location")} → ${e.destLabel?.trim().isNotEmpty == true ? e.destLabel!.trim() : tr("Destination", "Destination")}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.black54),
+                      ),
+                      const SizedBox(height: 6),
+                      // Chips row
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 6,
+                        crossAxisAlignment: WrapCrossAlignment.center,
+                        children: [
+                          _chip(
+                              icon: Icons.schedule,
+                              text: _fmtDuration(e.durationSeconds)),
+                          _chip(
+                              icon: Icons.pin_drop_outlined,
+                              text: fmtMeters(e.distanceMeters.toDouble())),
+                          _chip(
+                              icon: Icons.play_arrow_rounded,
+                              text: '${tr("Start", "Start")}: $startTime'),
+                          _chip(
+                              icon: Icons.stop_rounded,
+                              text: '${tr("End", "End")}: $endTime'),
+                        ],
+                      ),
                     ],
                   ),
+                ),
+                const SizedBox(width: 8),
+                if (!_selectionMode)
+                  const Icon(Icons.chevron_right_rounded,
+                      color: Colors.black38),
+              ],
+            ),
+
+            // Lines used (metro only)
+            if (!isCar && lines.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  Text(
+                    tr('Lines used', 'Lines used'),
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700, color: Colors.black87),
+                  ),
+                  ...lines.map(_lineChip),
                 ],
               ),
-            ),
-            const SizedBox(width: 8),
-            if (!_selectionMode)
-              const Icon(Icons.chevron_right_rounded, color: Colors.black38),
+              if ((e.fromStation?.isNotEmpty ?? false) ||
+                  (e.toStation?.isNotEmpty ?? false)) ...[
+                const SizedBox(height: 6),
+                Text(
+                  '${tr("From", "From")}: ${e.fromStation ?? tr("Unknown", "Unknown")}  •  ${tr("To", "To")}: ${e.toStation ?? tr("Unknown", "Unknown")}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.black54),
+                ),
+              ],
+            ],
           ],
         ),
       ),
@@ -652,33 +742,36 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     );
   }
 
-  // Details bottom sheet (without map per your latest request) ---------------
+  // ---- Details bottom sheet -------------------------------------------------
 
   void _openDetails(TravelEntry e) {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      isScrollControlled: false,
+      isScrollControlled: true, // <— allow tall content + scrolling
       backgroundColor: Colors.white,
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
-      builder: (_) => _TripDetailsSheet(
-        entry: e,
-        onDelete: () async {
-          Navigator.of(context).pop();
-          await _delete(e);
-        },
-        onNavigateAgain: () {
-          Navigator.of(context).pop();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(tr(
-                  'Opening the main map will let you set this destination again.',
-                  'Opening the main map will let you set this destination again.')),
-            ),
-          );
-        },
+      builder: (ctx) => FractionallySizedBox(
+        heightFactor: 0.9, // <— cap to 90% of screen height
+        child: _TripDetailsSheet(
+          entry: e,
+          onDelete: () async {
+            Navigator.of(ctx).pop();
+            await _delete(e);
+          },
+          onNavigateAgain: () {
+            Navigator.of(ctx).pop();
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text(tr(
+                    'Opening the main map will let you set this destination again.',
+                    'Opening the main map will let you set this destination again.')),
+              ),
+            );
+          },
+        ),
       ),
     );
   }
@@ -712,7 +805,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     }
   }
 
-  // Misc helpers --------------------------------------------------------------
+  // ---- Misc helpers ---------------------------------------------------------
 
   String _dateKey(DateTime dt) => '${dt.year}-${_2(dt.month)}-${_2(dt.day)}';
 
@@ -739,7 +832,6 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   }
 
   String _fmtTime(DateTime d) {
-    // HH:mm (24h) with leading zeros
     final h = _2(d.hour);
     final m = _2(d.minute);
     return '$h:$m';
@@ -777,8 +869,6 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
 
 // === Details sheet (no map) ==================================================
 
-// ===== Details sheet widget (overflow-safe header) ===========================
-
 class _TripDetailsSheet extends StatefulWidget {
   final TravelEntry entry;
   final VoidCallback onDelete;
@@ -795,107 +885,176 @@ class _TripDetailsSheet extends StatefulWidget {
 }
 
 class _TripDetailsSheetState extends State<_TripDetailsSheet> {
+  Color _lineColor(String key) {
+    switch (key.toLowerCase()) {
+      case 'blue':
+        return const Color(0xFF1976D2);
+      case 'red':
+        return const Color(0xFFD32F2F);
+      case 'green':
+        return const Color(0xFF388E3C);
+      case 'yellow':
+        return const Color(0xFFF9A825);
+      case 'orange':
+        return const Color(0xFFEF6C00);
+      case 'purple':
+        return const Color(0xFF7B1FA2);
+      default:
+        return const Color(0xFF00897B);
+    }
+  }
+
+  Widget _lineChip(String key) {
+    final text = key.isNotEmpty
+        ? '${key[0].toUpperCase()}${key.substring(1).toLowerCase()}'
+        : key;
+    final c = _lineColor(text);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: c.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: c.withOpacity(0.4)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+          const SizedBox(width: 6),
+          Text(text, style: TextStyle(fontWeight: FontWeight.w700, color: c)),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final e = widget.entry;
+    final lines = e.metroLineKeys ?? const [];
 
+    // --- SCROLLABLE CONTENT to avoid overflow ---
     return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // ---- Summary chips (Wrap to avoid overflow) ----
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: Wrap(
-                spacing: 10,
-                runSpacing: 10,
-                crossAxisAlignment: WrapCrossAlignment.center,
-                children: [
-                  _modeBadge(context, e.mode),
-                  _chip(
-                      Icons.schedule, _fmtDuration(context, e.durationSeconds)),
-                  _chip(Icons.pin_drop_outlined,
-                      fmtMeters(e.distanceMeters.toDouble())),
-                  _datePill(_friendlyDate(context, e.startedAt)),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-
-            // Origin / Destination key-values
-            _kv(getTranslated(context, 'Origin'),
-                e.originLabel ?? getTranslated(context, 'Unknown')),
-            _kv(getTranslated(context, 'Destination'),
-                e.destLabel ?? getTranslated(context, 'Unknown')),
-
-            // NEW: Start / End times
-            _kv(getTranslated(context, 'Start time'),
-                _fmtClock(context, e.startedAt)),
-            _kv(
-                getTranslated(context, 'End time'),
-                e.finishedAt == null
-                    ? getTranslated(context, '—')
-                    : _fmtClock(context, e.finishedAt!)),
-
-            const SizedBox(height: 14),
-
-            // Actions
-            Row(
+      child: LayoutBuilder(
+        builder: (ctx, cons) => SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+          child: ConstrainedBox(
+            // ensures Column can take full height if smaller, otherwise scrolls
+            constraints:
+                BoxConstraints(minHeight: 0, maxHeight: cons.maxHeight),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: widget.onNavigateAgain,
-                    icon: const Icon(Icons.navigation_rounded),
-                    label: Text(getTranslated(context, 'Navigate again')),
+                // Summary chips (Wrap to avoid overflow)
+                Align(
+                  alignment: AlignmentDirectional.centerStart,
+                  child: Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    crossAxisAlignment: WrapCrossAlignment.center,
+                    children: [
+                      _modeBadge(context, e.mode),
+                      _chip(Icons.schedule,
+                          _fmtDuration(context, e.durationSeconds)),
+                      _chip(Icons.pin_drop_outlined,
+                          fmtMeters(e.distanceMeters.toDouble())),
+                      _datePill(_friendlyDate(context, e.startedAt)),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red.shade600,
-                    ),
-                    onPressed: widget.onDelete,
-                    icon: const Icon(Icons.delete_forever_rounded,
-                        color: Colors.white),
-                    label: Text(
-                      getTranslated(context, 'Delete'),
-                      style: const TextStyle(color: Colors.white),
+                const SizedBox(height: 12),
+
+                // Lines used (metro only)
+                if (e.mode == 'metro' && lines.isNotEmpty) ...[
+                  Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: Wrap(
+                      spacing: 10,
+                      runSpacing: 10,
+                      children: [
+                        Text(getTranslated(context, 'Lines used'),
+                            style: const TextStyle(
+                                fontWeight: FontWeight.w700, fontSize: 14)),
+                        ...lines.map(_lineChip),
+                      ],
                     ),
                   ),
+                  const SizedBox(height: 10),
+                ],
+
+                // Origin / Destination, stations
+                _kv(getTranslated(context, 'Origin'),
+                    e.originLabel ?? getTranslated(context, 'Unknown')),
+                _kv(getTranslated(context, 'Destination'),
+                    e.destLabel ?? getTranslated(context, 'Unknown')),
+                if (e.mode == 'metro') ...[
+                  _kv(getTranslated(context, 'From station'),
+                      e.fromStation ?? getTranslated(context, 'Unknown')),
+                  _kv(getTranslated(context, 'To station'),
+                      e.toStation ?? getTranslated(context, 'Unknown')),
+                ],
+
+                // Start / End times
+                _kv(getTranslated(context, 'Start time'),
+                    _fmtClock(context, e.startedAt)),
+                _kv(
+                    getTranslated(context, 'End time'),
+                    e.finishedAt == null
+                        ? getTranslated(context, '—')
+                        : _fmtClock(context, e.finishedAt!)),
+
+                const SizedBox(height: 14),
+
+                // Actions
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: widget.onNavigateAgain,
+                        icon: const Icon(Icons.navigation_rounded),
+                        label: Text(getTranslated(context, 'Navigate again')),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: ElevatedButton.icon(
+                        style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.red.shade600),
+                        onPressed: widget.onDelete,
+                        icon: const Icon(Icons.delete_forever_rounded,
+                            color: Colors.white),
+                        label: Text(getTranslated(context, 'Delete'),
+                            style: const TextStyle(color: Colors.white)),
+                      ),
+                    ),
+                  ],
                 ),
               ],
             ),
-          ],
+          ),
         ),
       ),
     );
   }
 
-  // ---- UI helpers -----------------------------------------------------------
-
+  // --- UI helpers (unchanged) ---
   Widget _kv(String k, String v) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Row(
           children: [
             Expanded(
-              child: Text(
-                k,
-                style:
-                    const TextStyle(fontWeight: FontWeight.w700, fontSize: 13),
-              ),
-            ),
+                child: Text(k,
+                    style: const TextStyle(
+                        fontWeight: FontWeight.w700, fontSize: 13))),
             Expanded(
               flex: 2,
-              child: Text(
-                v,
-                textAlign: TextAlign.end,
-                style: const TextStyle(color: Colors.black87),
-                maxLines: 2, // helps RTL long labels too
-                overflow: TextOverflow.ellipsis,
-              ),
+              child: Text(v,
+                  textAlign: TextAlign.end,
+                  style: const TextStyle(color: Colors.black87),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis),
             ),
           ],
         ),
@@ -908,14 +1067,11 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
           borderRadius: BorderRadius.circular(18),
           border: Border.all(color: Colors.black12),
         ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 16, color: Colors.black87),
-            const SizedBox(width: 6),
-            Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
-          ],
-        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(icon, size: 16, color: Colors.black87),
+          const SizedBox(width: 6),
+          Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
+        ]),
       );
 
   Widget _datePill(String text) => Container(
@@ -930,7 +1086,15 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
           children: [
             const Icon(Icons.event, size: 16, color: Colors.black87),
             const SizedBox(width: 6),
-            Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
+            Flexible(
+              // avoids overflow on small widths
+              child: Text(
+                text,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
           ],
         ),
       );
@@ -943,18 +1107,14 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: Colors.white,
-        border: Border.all(color: Colors.black12),
-        borderRadius: BorderRadius.circular(18),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 18),
-          const SizedBox(width: 6),
-          Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
-        ],
-      ),
+          color: Colors.white,
+          border: Border.all(color: Colors.black12),
+          borderRadius: BorderRadius.circular(18)),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 18),
+        const SizedBox(width: 6),
+        Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+      ]),
     );
   }
 
@@ -966,7 +1126,6 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
     if (d == today) return getTranslated(ctx, 'Today');
     if (d == yday) return getTranslated(ctx, 'Yesterday');
     return '${dt.year}-${_2(dt.month)}-${_2(dt.day)} ${_2(dt.hour)}:${_2(dt.minute)}';
-    // note: above includes time for older days
   }
 
   String _fmtClock(BuildContext ctx, DateTime dt) =>
@@ -984,7 +1143,7 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
   String _2(int n) => n.toString().padLeft(2, '0');
 }
 
-// ===== Data model (unchanged except comments) ================================
+// ===== Data model (ADDED metro fields) =======================================
 
 class TravelEntry {
   final String id;
@@ -996,7 +1155,12 @@ class TravelEntry {
   final int durationSeconds;
   final int distanceMeters;
   final DateTime startedAt;
-  final DateTime? finishedAt; // may be null for in-progress or legacy rows
+  final DateTime? finishedAt; // may be null
+
+  // NEW: metro-specific metadata
+  final List<String>? metroLineKeys; // e.g. ["Blue","Purple"]
+  final String? fromStation; // optional
+  final String? toStation; // optional
 
   TravelEntry({
     required this.id,
@@ -1009,6 +1173,9 @@ class TravelEntry {
     required this.distanceMeters,
     required this.startedAt,
     required this.finishedAt,
+    this.metroLineKeys,
+    this.fromStation,
+    this.toStation,
   });
 
   Map<String, dynamic> toMap() => {
@@ -1023,7 +1190,24 @@ class TravelEntry {
         'distanceMeters': distanceMeters,
         'startedAt': startedAt.millisecondsSinceEpoch,
         'finishedAt': finishedAt?.millisecondsSinceEpoch,
+        // NEW
+        'metroLineKeys': metroLineKeys,
+        'fromStation': fromStation,
+        'toStation': toStation,
       };
+
+  static List<String>? _readLines(dynamic v) {
+    if (v == null) return null;
+    if (v is List) {
+      // ensure strings & Capitalize first letter
+      return v
+          .map((e) => (e?.toString() ?? '').trim())
+          .where((s) => s.isNotEmpty)
+          .map((s) => s[0].toUpperCase() + s.substring(1).toLowerCase())
+          .toList();
+    }
+    return null;
+  }
 
   factory TravelEntry.fromMap(String id, Map<Object?, Object?> m) {
     LatLng? _ll(String a, String b) {
@@ -1048,6 +1232,10 @@ class TravelEntry {
           ? null
           : DateTime.fromMillisecondsSinceEpoch(
               (m['finishedAt'] as num).toInt()),
+      // NEW
+      metroLineKeys: _readLines(m['metroLineKeys']),
+      fromStation: (m['fromStation'] ?? m['from_station'] ?? '') as String?,
+      toStation: (m['toStation'] ?? m['to_station'] ?? '') as String?,
     );
   }
 }
