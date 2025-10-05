@@ -91,7 +91,7 @@ enum _ActiveField { none, origin, destination }
 
 enum _TripMode { metro, drive }
 
-enum NavHintType { walk, board, transfer, alight }
+enum NavHintType { walk, board, transfer, alight, prepare }
 
 class MainScreen extends StatefulWidget {
   final String firstName;
@@ -111,6 +111,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       false; // shown "walk to first" and/or reached first station
   final Set<String> _transferNextShown =
       {}; // track which "transfer at next" prompts we already showed
+// NEW: de-dupe for “prepare to transfer”
+  final Set<String> _transferPrepareShown = {};
+// NEW: UI fields for “prepare to transfer soon”
+  bool _transferSoon = false;
+  int _transferSoonStopsAway = 0;
+  String? _transferSoonLineKey;
+  String? _transferSoonStationName;
 
   OverlayEntry? _navHintEntry;
 
@@ -141,6 +148,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       case NavHintType.alight:
         bg = const Color(0xFFE53935);
         icon = Icons.flag_rounded;
+        break;
+      case NavHintType.prepare:
+        bg = const Color(0xFFFFC107); // amber
+        icon = Icons.swap_calls_rounded;
         break;
     }
 
@@ -1129,6 +1140,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _lastLegShown = _metroLeg;
 
       // ── Compose metro status + alerts (walk/transfer/alight) ─────────────────
+      // ── Compose metro status + alerts (walk/prepare/transfer/alight) ─────────
       if (_tripMode == _TripMode.metro && _metroSeq.length >= 2) {
         final StationNode curr = _metroSeq[_metroLeg];
         final StationNode next =
@@ -1164,43 +1176,78 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _transferToLineKey = transferToLine;
         _metroAlightAtNext = alightAtNext;
 
-        // A) BEFORE BOARDING: show “Walk to FIRST station …” once and never again
+        // ==== NEW: “prepare to transfer” heads-up (e.g., 2 stops ahead) =========
+        const int _TRANSFER_PREP_STOPS = 2; // tweak to 1/3 if you prefer
+        _transferSoon = false;
+        _transferSoonStopsAway = 0;
+        _transferSoonLineKey = null;
+        _transferSoonStationName = null;
+
+        int? xferLegIdx;
+        for (int i = _metroLeg; i < _metroSeq.length - 1; i++) {
+          if (_metroSeq[i].lineKey != _metroSeq[i + 1].lineKey) {
+            xferLegIdx = i; // transfer occurs on hop i -> i+1
+            break;
+          }
+        }
+
+        if (xferLegIdx != null) {
+          final int stopsToTransfer = (xferLegIdx - _metroLeg) + 1; // next = +1
+          if (stopsToTransfer == _TRANSFER_PREP_STOPS) {
+            final StationNode transferAt = _metroSeq[xferLegIdx + 1];
+            final String toLine = _metroSeq[xferLegIdx + 1].lineKey;
+            final key = 'xfer_prep_${transferAt.id}_$toLine';
+
+            if (!_transferPrepareShown.contains(key)) {
+              final msg =
+                  '${getTranslated(context, "Get ready to change lines at")} ${transferAt.name} '
+                  '(${getTranslated(context, "to")} ${getTranslated(context, toLine)})';
+              _notifyOnce(key, msg, type: NavHintType.prepare);
+              _transferPrepareShown.add(key);
+            }
+
+            // expose to UI/onboard panel
+            _transferSoon = true;
+            _transferSoonStopsAway = stopsToTransfer;
+            _transferSoonLineKey = toLine;
+            _transferSoonStationName = transferAt.name;
+          }
+        }
+        // ==== END NEW ============================================================
+
+        // A) BEFORE BOARDING: show “Walk to FIRST station …” once
         final StationNode first = _metroSeq.first;
-        final bool stillBeforeBoard =
-            (_metroLeg == 0); // not yet left first node
+        final bool stillBeforeBoard = (_metroLeg == 0);
         final double dToFirst = Geolocator.distanceBetween(
           uiPos.latitude,
           uiPos.longitude,
           first.pos.latitude,
           first.pos.longitude,
         );
-
-        // If you’re basically at the first station, lock out the prompt forever
         if (dToFirst < 80.0) {
           _walkFirstPromptDone = true;
         }
-
         if (stillBeforeBoard && !_walkFirstPromptDone && dToFirst > 120.0) {
           final msg = '${getTranslated(context, "Walk to")} ${first.name} '
               '${getTranslated(context, "to board the")} ${getTranslated(context, currLine)}';
           _notifyOnce('walk_board_once_${first.id}_$currLine', msg,
               type: NavHintType.board);
-          _walkFirstPromptDone = true; // mark as shown immediately
+          _walkFirstPromptDone = true;
         }
 
-        // B) TRANSFER: announce one-stop ahead (like “Alight at next station”)
+        // B) TRANSFER: announce one-stop ahead (existing)
         if (transferAtNext && transferToLine != null) {
           final key = 'xfer_next_${next.id}_$transferToLine';
           if (!_transferNextShown.contains(key)) {
             final msg =
                 '${getTranslated(context, "Change line at next station")} → '
-                '${getTranslated(context, transferToLine)}}';
+                '${getTranslated(context, transferToLine)}';
             _notifyOnce(key, msg, type: NavHintType.transfer);
             _transferNextShown.add(key);
           }
         }
 
-        // C) ALIGHT AT NEXT (one-stop-ahead)
+        // C) ALIGHT AT NEXT (existing)
         if (alightAtNext && _metroLeg >= 1) {
           _notifyOnce(
             'alight_${next.id}',
@@ -3553,8 +3600,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     Position pos;
                                     try {
                                       pos = await Geolocator.getCurrentPosition(
-                                          desiredAccuracy:
-                                              LocationAccuracy.high);
+                                        desiredAccuracy: LocationAccuracy.high,
+                                      );
                                     } catch (_) {
                                       pos = await Geolocator
                                               .getLastKnownPosition() ??
@@ -3639,11 +3686,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     final enriched = rawStops.map((m) {
                                       final String nameEn = m['name'] as String;
                                       final transfers = List<String>.from(
-                                              nameToLines[nameEn] ??
-                                                  const <String>[])
+                                        nameToLines[nameEn] ?? const <String>[],
+                                      )
                                           .where((l) =>
                                               l.toLowerCase() != keyLower)
                                           .toList();
+
                                       return (
                                         stop: MetroStop(
                                           id: nameEn,
@@ -3691,63 +3739,83 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                       }
                                     }
 
-                                    // 8) Destination-aware DIRECTION (terminal)
-                                    // Replace these with your real destination variables:
-                                    final LatLng? _destLL = _tripDestLL ??
-                                        _navDestination ??
-                                        _userDestination;
-                                    final double? destLat = _destLL?.latitude;
-                                    final double? destLng = _destLL?.longitude;
-
+                                    // 8) Direction derived from the banner’s NEXT STATION when available.
+                                    //    This guarantees correct “current → next” flow (e.g., Wurud → STC).
                                     bool forward;
-                                    if (destLat != null && destLng != null) {
-                                      // snap destination to nearest station on this line
-                                      int destIdx = 0;
-                                      double bestDest = double.infinity;
-                                      for (int i = 0;
-                                          i < enriched.length;
-                                          i++) {
-                                        final d = _haversine(destLat, destLng,
-                                            enriched[i].lat, enriched[i].lng);
-                                        if (d < bestDest) {
-                                          bestDest = d;
-                                          destIdx = i;
-                                        }
-                                      }
-                                      // move forward if destination is after current in list order
-                                      forward = destIdx >= currentIdx;
 
-                                      // if equal, choose closer terminal from current position
-                                      if (destIdx == currentIdx) {
-                                        final dToFirst = _haversine(
-                                            enriched[currentIdx].lat,
-                                            enriched[currentIdx].lng,
-                                            enriched.first.lat,
-                                            enriched.first.lng);
-                                        final dToLast = _haversine(
-                                            enriched[currentIdx].lat,
-                                            enriched[currentIdx].lng,
-                                            enriched.last.lat,
-                                            enriched.last.lng);
-                                        forward = dToLast < dToFirst;
-                                      }
+                                    // Prefer banner-provided next station name (from the green banner logic)
+                                    int nextByBannerIdx = -1;
+                                    final String? nextName = _metroNextName;
+                                    if (nextName != null &&
+                                        nextName.trim().isNotEmpty) {
+                                      final want =
+                                          nextName.trim().toLowerCase();
+                                      nextByBannerIdx = enriched.indexWhere(
+                                          (e) =>
+                                              e.stop.nameEn.toLowerCase() ==
+                                                  want ||
+                                              e.stop.nameAr.toLowerCase() ==
+                                                  want);
+                                    }
+
+                                    if (nextByBannerIdx != -1) {
+                                      // If banner says the next station is STC, and we’re at Wurud (index smaller),
+                                      // forward becomes true (move right in the list).
+                                      forward = nextByBannerIdx > currentIdx;
                                     } else {
-                                      // fallback if no destination set: neighbor-distance heuristic
-                                      final prevIdx = (currentIdx - 1)
-                                          .clamp(0, stops.length - 1);
-                                      final nextIdx = (currentIdx + 1)
-                                          .clamp(0, stops.length - 1);
-                                      final dPrev = _haversine(
-                                          myLat,
-                                          myLng,
-                                          enriched[prevIdx].lat,
-                                          enriched[prevIdx].lng);
-                                      final dNext = _haversine(
-                                          myLat,
-                                          myLng,
-                                          enriched[nextIdx].lat,
-                                          enriched[nextIdx].lng);
-                                      forward = dNext <= dPrev;
+                                      // Fallbacks when banner next isn't available
+                                      final LatLng? _destLL = _tripDestLL ??
+                                          _navDestination ??
+                                          _userDestination;
+                                      final double? destLat = _destLL?.latitude;
+                                      final double? destLng =
+                                          _destLL?.longitude;
+
+                                      if (destLat != null && destLng != null) {
+                                        int destIdx = 0;
+                                        double bestDest = double.infinity;
+                                        for (int i = 0;
+                                            i < enriched.length;
+                                            i++) {
+                                          final d = _haversine(destLat, destLng,
+                                              enriched[i].lat, enriched[i].lng);
+                                          if (d < bestDest) {
+                                            bestDest = d;
+                                            destIdx = i;
+                                          }
+                                        }
+                                        forward = destIdx > currentIdx;
+                                        if (destIdx == currentIdx) {
+                                          final dToFirst = _haversine(
+                                              enriched[currentIdx].lat,
+                                              enriched[currentIdx].lng,
+                                              enriched.first.lat,
+                                              enriched.first.lng);
+                                          final dToLast = _haversine(
+                                              enriched[currentIdx].lat,
+                                              enriched[currentIdx].lng,
+                                              enriched.last.lat,
+                                              enriched.last.lng);
+                                          forward = dToLast < dToFirst;
+                                        }
+                                      } else {
+                                        // Last resort: neighbor-distance heuristic
+                                        final prevIdx = (currentIdx - 1)
+                                            .clamp(0, stops.length - 1);
+                                        final nextIdx = (currentIdx + 1)
+                                            .clamp(0, stops.length - 1);
+                                        final dPrev = _haversine(
+                                            myLat,
+                                            myLng,
+                                            enriched[prevIdx].lat,
+                                            enriched[prevIdx].lng);
+                                        final dNext = _haversine(
+                                            myLat,
+                                            myLng,
+                                            enriched[nextIdx].lat,
+                                            enriched[nextIdx].lng);
+                                        forward = dNext <= dPrev;
+                                      }
                                     }
 
                                     // 9) Header (terminal) + visuals
@@ -3764,8 +3832,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                       context,
                                       stops: stops,
                                       currentIndex: currentIdx,
-                                      lineKey: lineKey,
-                                      lineColor: lineColor,
+                                      lineKey: lineKey, // e.g. "Blue"
+                                      lineColor: lineColor, // mapped color
                                       directionNameEn: dirEn,
                                       directionNameAr: dirAr,
                                       etaToNext: Duration(
@@ -3779,7 +3847,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                           'ar',
                                       forward: forward,
                                       nextStationOverride:
-                                          _metroNextName, // ✅ ensures sync with green banner
+                                          _metroNextName, // keeps sheet in sync with banner
+
+                                      // optional next‑stop actions (wire to your nav state)
+                                      alightHere: _metroAlightAtNext == true,
+                                      transferHere: _transferAtNext == true,
+                                      transferToLineKey:
+                                          _transferToLineKey, // e.g., "blue"
                                     );
                                   },
                                   child: _pill(

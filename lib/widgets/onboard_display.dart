@@ -8,7 +8,7 @@ class MetroStop {
   final bool isTransfer;
   final List<String> transferLines;
 
-  MetroStop({
+  const MetroStop({
     required this.id,
     required this.nameEn,
     required this.nameAr,
@@ -17,6 +17,7 @@ class MetroStop {
   });
 }
 
+/// Launches the onboard (bottom‑sheet) display.
 Future<void> showOnboardDisplay(
   BuildContext context, {
   // REQUIRED (same as before)
@@ -41,6 +42,17 @@ Future<void> showOnboardDisplay(
   Color? nextLineColor,
   String? nextDirectionNameEn,
   String? nextDirectionNameAr,
+
+  // Existing next‑stop action signals
+  bool alightHere = false, // show “Alight here”
+  bool transferHere = false, // show “Transfer here”
+  String? transferToLineKey, // e.g. "red"
+
+  // NEW — prepare-to-transfer (heads-up soon)
+  bool prepareTransferSoon = false, // show “Get ready …”
+  int prepareTransferStopsAway = 0, // e.g., 2
+  String? prepareTransferToLineKey, // e.g., "red"
+  String? prepareAtStationName, // e.g., "King Abdullah FD"
 }) async {
   assert(stops.isNotEmpty);
   currentIndex = currentIndex.clamp(0, stops.length - 1);
@@ -78,6 +90,17 @@ Future<void> showOnboardDisplay(
           nextLineColor: nextLineColor,
           nextDirectionNameEn: nextDirectionNameEn,
           nextDirectionNameAr: nextDirectionNameAr,
+
+          // Existing action flags
+          alightHere: alightHere,
+          transferHere: transferHere,
+          transferToLineKey: transferToLineKey,
+
+          // NEW prepare flags
+          prepareTransferSoon: prepareTransferSoon,
+          prepareTransferStopsAway: prepareTransferStopsAway,
+          prepareTransferToLineKey: prepareTransferToLineKey,
+          prepareAtStationName: prepareAtStationName,
         ),
       );
     },
@@ -105,6 +128,17 @@ class _OnboardPanel extends StatefulWidget {
     this.nextLineColor,
     this.nextDirectionNameEn,
     this.nextDirectionNameAr,
+
+    // Existing action flags
+    this.alightHere = false,
+    this.transferHere = false,
+    this.transferToLineKey,
+
+    // NEW prepare flags
+    this.prepareTransferSoon = false,
+    this.prepareTransferStopsAway = 0,
+    this.prepareTransferToLineKey,
+    this.prepareAtStationName,
   });
 
   final List<MetroStop> stops;
@@ -127,13 +161,24 @@ class _OnboardPanel extends StatefulWidget {
   final String? nextDirectionNameEn;
   final String? nextDirectionNameAr;
 
+  // Existing action flags
+  final bool alightHere;
+  final bool transferHere;
+  final String? transferToLineKey;
+
+  // NEW prepare flags
+  final bool prepareTransferSoon;
+  final int prepareTransferStopsAway;
+  final String? prepareTransferToLineKey;
+  final String? prepareAtStationName;
+
   @override
   State<_OnboardPanel> createState() => _OnboardPanelState();
 }
 
 class _OnboardPanelState extends State<_OnboardPanel>
     with SingleTickerProviderStateMixin {
-  // Slightly quicker loop, and with a curve for smoother motion.
+  // animation
   late final AnimationController _ctrl =
       AnimationController(vsync: this, duration: const Duration(seconds: 4))
         ..repeat();
@@ -341,7 +386,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
 
     final nextStop = activeStops.isNotEmpty
         ? activeStops[nextIdx]
-        : MetroStop(id: 'n/a', nameEn: '-', nameAr: '-');
+        : const MetroStop(id: 'n/a', nameEn: '-', nameAr: '-');
 
     final hasTransfers = activeStops.any((s) => s.transferLines.isNotEmpty);
     final double timelineH = hasTransfers ? 150.0 : 120.0;
@@ -353,6 +398,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            // drag handle
             Container(
               width: 40,
               height: 5,
@@ -362,6 +408,8 @@ class _OnboardPanelState extends State<_OnboardPanel>
               ),
             ),
             const SizedBox(height: 12),
+
+            // Header
             Row(
               children: [
                 Container(
@@ -401,6 +449,23 @@ class _OnboardPanelState extends State<_OnboardPanel>
                   ),
               ],
             ),
+
+            // Action banner (alight / transfer / prepare)
+            if (widget.alightHere ||
+                widget.transferHere ||
+                widget.prepareTransferSoon) ...[
+              const SizedBox(height: 10),
+              _NextActionBanner(
+                alight: widget.alightHere,
+                transfer: widget.transferHere,
+                transferToLineKey: widget.transferToLineKey,
+                // NEW prepare
+                prepare: widget.prepareTransferSoon,
+                prepareStopsAway: widget.prepareTransferStopsAway,
+                prepareToLineKey: widget.prepareTransferToLineKey,
+                prepareAtStation: widget.prepareAtStationName,
+              ),
+            ],
 
             if (_hasFullLine || _hasNextLine) ...[
               const SizedBox(height: 10),
@@ -478,9 +543,8 @@ class _OnboardPanelState extends State<_OnboardPanel>
                                     ? StationState.passed
                                     : StationState.upcoming),
                             // show moving elements on current & next
-                            showTrainHere: isCurrent, // 👈 only on current stop
+                            showTrainHere: isCurrent,
                             trainT: animT,
-                            // extra animation phase for pulse/chevrons
                             animPhase: animT,
                             isNextDot: isNext,
                             rtl: widget.isRTL,
@@ -496,11 +560,24 @@ class _OnboardPanelState extends State<_OnboardPanel>
 
             const SizedBox(height: 6),
 
+            // Next station card + chips
             _NextCard(
               title: widget.isRTL ? 'المحطة التالية' : 'Next station',
               name: widget.isRTL ? nextStop.nameAr : nextStop.nameEn,
               transfers: nextStop.transferLines,
               accent: lineColor,
+
+              // chips
+              alightHere: widget.alightHere,
+              transferHere: widget.transferHere,
+              transferToLineKey: widget.transferToLineKey,
+              rtl: widget.isRTL,
+
+              // NEW prepare chip data
+              prepareTransferSoon: widget.prepareTransferSoon,
+              prepareTransferStopsAway: widget.prepareTransferStopsAway,
+              prepareTransferToLineKey: widget.prepareTransferToLineKey,
+              prepareAtStationName: widget.prepareAtStationName,
             ),
           ],
         ),
@@ -570,18 +647,14 @@ class _StationColumn extends StatelessWidget {
     final double bob = math.sin(animPhase * 2 * math.pi) * 1.5;
 
     // Chevron flow (3 chevrons drifting from current→next)
-    // spacing & base position tuned for 100x34 dot area
     List<Widget> _chevrons() {
       const int count = 3;
       const double spacing = 14;
-      // phase shift makes them loop; convert to -1..1 then map to 0..(count+1)
       final double p = animPhase;
       final double head = (p * (count + 1)); // 0..count+1
       final List<Widget> list = [];
       for (int i = 0; i < count; i++) {
-        // chevron index position relative to head
         final double k = head - i;
-        // 0..1 visible window
         final double vis = k.clamp(0, 1);
         final double alpha = (1 - (k - vis).abs()).clamp(0, 1);
         final double offset = 50 + dirSign * (18 + spacing * i + 28 * vis);
@@ -603,7 +676,6 @@ class _StationColumn extends StatelessWidget {
 
     // Pulse for “next” station (concentric waves)
     Widget _nextPulse() {
-      // 0..1..0 wave
       final double wave = (math.sin(animPhase * 2 * math.pi) + 1) / 2;
       final double r = 12 + 6 * wave; // radius 12..18
       return IgnorePointer(
@@ -646,12 +718,7 @@ class _StationColumn extends StatelessWidget {
             child: Stack(
               alignment: Alignment.center,
               children: [
-                // Pulsing hint on the next station
-                if (isNextDot)
-                  Positioned(
-                    child: _nextPulse(),
-                  ),
-
+                if (isNextDot) Positioned(child: _nextPulse()),
                 // Base dot
                 Container(
                   width: state == StationState.current ? 14 : 10,
@@ -674,16 +741,12 @@ class _StationColumn extends StatelessWidget {
                         : null,
                   ),
                 ),
-
-                // Directional chevrons flowing towards next
                 if (showTrainHere) ..._chevrons(),
-
-                // Moving train (with soft shadow and bob)
                 if (showTrainHere)
                   Positioned(
                     left: rtl ? null : trainDx,
                     right: rtl ? trainDx : null,
-                    top: bob, // small vertical bob
+                    top: bob,
                     child: DecoratedBox(
                       decoration: BoxDecoration(
                         boxShadow: [
@@ -811,12 +874,137 @@ class _BaselinePainter extends CustomPainter {
       oldDelegate.color != color;
 }
 
+// ─────────────────────────── Action banner ───────────────────────────
+class _NextActionBanner extends StatelessWidget {
+  final bool alight;
+  final bool transfer;
+  final String? transferToLineKey;
+
+  // NEW prepare
+  final bool prepare;
+  final int prepareStopsAway;
+  final String? prepareToLineKey;
+  final String? prepareAtStation;
+
+  const _NextActionBanner({
+    required this.alight,
+    required this.transfer,
+    required this.transferToLineKey,
+    this.prepare = false,
+    this.prepareStopsAway = 0,
+    this.prepareToLineKey,
+    this.prepareAtStation,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    late Color bg, border;
+    late IconData icon;
+    late String title, subtitle;
+
+    if (alight) {
+      bg = const Color(0xFFFFEBEE);
+      border = const Color(0xFFE53935);
+      icon = Icons.directions_walk_rounded;
+      title = _t(context, 'Alight at next station', 'انزل في المحطة التالية');
+      subtitle =
+          _t(context, 'Get ready to exit the train', 'استعد للنزول من القطار');
+    } else if (transfer) {
+      bg = const Color(0xFFFFF3E0);
+      border = const Color(0xFFFB8C00);
+      icon = Icons.swap_horiz_rounded;
+      final line = (transferToLineKey ?? '').toLowerCase();
+      title = _t(context, 'Change line here', 'بدّل الخط هنا');
+      subtitle =
+          '${_t(context, 'to', 'إلى')} ${_cap(line)} ${_t(context, 'line', 'الخط')}';
+    } else if (prepare) {
+      bg = const Color(0xFFFFF8E1); // very light amber
+      border = const Color(0xFFFFC107); // amber
+      icon = Icons.schedule_rounded;
+      final toLine = (prepareToLineKey ?? '').toLowerCase();
+      final atName = prepareAtStation ?? '-';
+      final stops = prepareStopsAway > 0
+          ? ' ${_t(context, "in", "خلال")} $prepareStopsAway ${_t(context, "stops", "محطات")}'
+          : '';
+      title = _t(context, 'Get ready to change line', 'استعد لتبديل الخط');
+      subtitle =
+          '${_t(context, "At", "في")} $atName • ${_t(context, "to", "إلى")} ${_cap(toLine)} ${_t(context, "line", "الخط")}$stops';
+    } else {
+      // Fallback (shouldn’t happen)
+      bg = const Color(0xFFE3F2FD);
+      border = const Color(0xFF1976D2);
+      icon = Icons.info_outline;
+      title = _t(context, 'Info', 'معلومة');
+      subtitle = '';
+    }
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: border),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+              border: Border.all(color: border.withOpacity(.4)),
+            ),
+            child: Icon(icon, size: 20, color: border),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title,
+                    style:
+                        TextStyle(color: border, fontWeight: FontWeight.w900)),
+                if (subtitle.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(subtitle,
+                      style: const TextStyle(
+                          color: Colors.black87, fontWeight: FontWeight.w600)),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  static String _t(BuildContext c, String en, String ar) =>
+      Directionality.of(c) == TextDirection.rtl ? ar : en;
+  static String _cap(String s) =>
+      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+}
+
+// ─────────────────────────── Next station card ───────────────────────────
 class _NextCard extends StatelessWidget {
   const _NextCard({
     required this.title,
     required this.name,
     required this.transfers,
     required this.accent,
+
+    // Existing chips
+    required this.alightHere,
+    required this.transferHere,
+    required this.transferToLineKey,
+    required this.rtl,
+
+    // NEW prepare chip
+    required this.prepareTransferSoon,
+    required this.prepareTransferStopsAway,
+    required this.prepareTransferToLineKey,
+    required this.prepareAtStationName,
   });
 
   final String title;
@@ -824,9 +1012,47 @@ class _NextCard extends StatelessWidget {
   final List<String> transfers;
   final Color accent;
 
+  final bool alightHere;
+  final bool transferHere;
+  final String? transferToLineKey;
+  final bool rtl;
+
+  // NEW
+  final bool prepareTransferSoon;
+  final int prepareTransferStopsAway;
+  final String? prepareTransferToLineKey;
+  final String? prepareAtStationName;
+
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
+
+    final List<Widget> chips = [];
+    if (alightHere) {
+      chips.add(_chip(context, Icons.directions_walk_rounded,
+          _t(context, 'Alight here', 'انزل هنا'), const Color(0xFFE53935)));
+    } else if (transferHere) {
+      final lc = (transferToLineKey ?? '').toLowerCase();
+      final c = _lineColor(lc) ?? const Color(0xFFFB8C00);
+      chips.add(_chip(
+        context,
+        Icons.swap_horiz_rounded,
+        '${_t(context, 'Transfer', 'تحويل')} → ${_cap(lc)}',
+        c,
+      ));
+    } else if (prepareTransferSoon) {
+      final lc = (prepareTransferToLineKey ?? '').toLowerCase();
+      final c = _lineColor(lc) ?? const Color(0xFFFFC107);
+      final stops =
+          prepareTransferStopsAway > 0 ? ' · $prepareTransferStopsAway' : '';
+      chips.add(_chip(
+        context,
+        Icons.schedule_rounded,
+        '${_t(context, 'Prepare to transfer', 'استعد للتحويل')} → ${_cap(lc)}$stops',
+        c,
+      ));
+    }
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(12),
@@ -835,38 +1061,84 @@ class _NextCard extends StatelessWidget {
         color: t.cardColor,
         border: Border.all(color: t.dividerColor.withOpacity(0.5)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Container(
+          Row(children: [
+            Container(
               width: 6,
               height: 40,
               decoration: BoxDecoration(
-                  color: accent, borderRadius: BorderRadius.circular(6))),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(title,
-                    style:
-                        t.textTheme.labelMedium?.copyWith(color: t.hintColor)),
-                const SizedBox(height: 4),
-                Text(name,
-                    style: t.textTheme.titleMedium
-                        ?.copyWith(fontWeight: FontWeight.w700)),
-                if (transfers.isNotEmpty) ...[
-                  const SizedBox(height: 6),
-                  Wrap(
-                    spacing: 6,
-                    children:
-                        transfers.map((l) => _TransferBadge(line: l)).toList(),
-                  ),
-                ],
-              ],
+                  color: accent, borderRadius: BorderRadius.circular(6)),
             ),
-          ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title,
+                      style: t.textTheme.labelMedium
+                          ?.copyWith(color: t.hintColor)),
+                  const SizedBox(height: 4),
+                  Text(name,
+                      overflow: TextOverflow.ellipsis,
+                      style: t.textTheme.titleMedium
+                          ?.copyWith(fontWeight: FontWeight.w700)),
+                ],
+              ),
+            ),
+            if (chips.isNotEmpty) Wrap(spacing: 8, children: chips),
+          ]),
+          if (transfers.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: transfers.map((l) => _TransferBadge(line: l)).toList(),
+            ),
+          ],
         ],
       ),
     );
+  }
+
+  static Widget _chip(BuildContext c, IconData ic, String text, Color cMain) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(100),
+        border: Border.all(color: cMain.withOpacity(.4)),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(ic, size: 16, color: cMain),
+        const SizedBox(width: 6),
+        Text(text, style: TextStyle(color: cMain, fontWeight: FontWeight.w800)),
+      ]),
+    );
+  }
+
+  static String _t(BuildContext c, String en, String ar) =>
+      Directionality.of(c) == TextDirection.rtl ? ar : en;
+
+  static String _cap(String s) =>
+      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
+
+  static Color? _lineColor(String key) {
+    switch (key) {
+      case 'blue':
+        return const Color(0xFF1E88E5);
+      case 'red':
+        return const Color(0xFFE53935);
+      case 'green':
+        return const Color(0xFF43A047);
+      case 'yellow':
+        return const Color(0xFFFDD835);
+      case 'orange':
+        return const Color(0xFFFB8C00);
+      case 'purple':
+        return const Color(0xFF8E24AA);
+    }
+    return null;
   }
 }

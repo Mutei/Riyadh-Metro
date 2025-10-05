@@ -2,6 +2,7 @@
 import 'package:darb/screens/login_screen.dart';
 import 'package:darb/screens/main_screen.dart';
 import 'package:darb/screens/sign_up_screen.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -17,6 +18,12 @@ import 'constants/colors.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await Firebase.initializeApp(); // Firebase Init
+
+  await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
+    alert: true,
+    badge: true,
+    sound: true,
+  );
 
   final startLocale = await getLocale(); // load saved locale before runApp
 
@@ -54,6 +61,42 @@ class _MyAppState extends State<MyApp> {
   void initState() {
     super.initState();
     _locale = widget.startLocale;
+    _initPushNotifications();
+  }
+
+  Future<void> _initPushNotifications() async {
+    try {
+      final messaging = FirebaseMessaging.instance;
+
+      // Request permission (iOS/macOS + Android 13+)
+      final settings = await messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+        announcement: false,
+        carPlay: false,
+        criticalAlert: false,
+        provisional: false,
+      );
+      debugPrint('Notification authorization: ${settings.authorizationStatus}');
+
+      // Ensure banner while in foreground (Apple)
+      await messaging.setForegroundNotificationPresentationOptions(
+        alert: true,
+        badge: true,
+        sound: true,
+      );
+
+      // Save current token
+
+      // Optional: foreground messages
+      FirebaseMessaging.onMessage.listen((RemoteMessage m) {
+        debugPrint(
+            'Foreground message: ${m.notification?.title} | ${m.notification?.body}');
+      });
+    } catch (e) {
+      debugPrint('Push init failed: $e');
+    }
   }
 
   void setLocale(Locale newLocale) {
