@@ -41,7 +41,7 @@ String lineLabel(BuildContext context, String lineKey) {
     'blue': 'الخط الأزرق',
     'green': 'الخط الأخضر',
     'orange': 'الخط البرتقالي',
-    'purple': 'الخط الأرجواني',
+    'purple': 'الخط البنفسجي',
     'yellow': 'الخط الأصفر',
   };
   final map = isAr ? ar : en;

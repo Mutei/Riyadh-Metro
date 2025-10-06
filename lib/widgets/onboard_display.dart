@@ -188,6 +188,56 @@ class _OnboardPanelState extends State<_OnboardPanel>
   final _scrollCtrl = ScrollController();
   late _ViewMode _mode;
 
+  // ───────────── Localization helpers ─────────────
+  bool get _rtl => widget.isRTL;
+
+  String _t(String en, String ar) => _rtl ? ar : en;
+
+  String _localizeDigits(String input) {
+    if (!_rtl) return input;
+    const western = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    const arabic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+    final buf = StringBuffer();
+    for (final ch in input.split('')) {
+      final i = western.indexOf(ch);
+      buf.write(i >= 0 ? arabic[i] : ch);
+    }
+    return buf.toString();
+  }
+
+  // Localized color/line names for display
+  String _lineNameLocalized(String key) {
+    switch (key.toLowerCase()) {
+      case 'blue':
+        return _t('Blue', 'الأزرق');
+      case 'red':
+        return _t('Red', 'الأحمر');
+      case 'green':
+        return _t('Green', 'الأخضر');
+      case 'yellow':
+        return _t('Yellow', 'الأصفر');
+      case 'orange':
+        return _t('Orange', 'البرتقالي');
+      case 'purple':
+        return _t('Purple', 'الأرجواني');
+      default:
+        // Capitalize unknown keys
+        final s = key.isEmpty ? key : key[0].toUpperCase() + key.substring(1);
+        return s;
+    }
+  }
+
+  String _fmtEta(Duration d) {
+    if (d.inMinutes >= 1) {
+      final txt = '${d.inMinutes} ${_t("min", "دقيقة")}';
+      return _localizeDigits(txt);
+    }
+    final txt = '${d.inSeconds}${_t("s", " ث")}'.trim();
+    return _localizeDigits(txt);
+  }
+
+  String _ld(String s) => _localizeDigits(s);
+
   @override
   void initState() {
     super.initState();
@@ -425,15 +475,20 @@ class _OnboardPanelState extends State<_OnboardPanel>
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('Line $lineKey',
-                          style: t.textTheme.titleMedium
-                              ?.copyWith(fontWeight: FontWeight.w700)),
+                      // “Line Blue” -> “الخط الأزرق”
+                      Text(
+                        '${_t("Line", "الخط")} ${_lineNameLocalized(lineKey)}',
+                        style: t.textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w700),
+                      ),
                       const SizedBox(height: 2),
-                      Text(widget.isRTL ? dirTextAr : dirTextEn,
-                          style: t.textTheme.bodyMedium
-                              ?.copyWith(color: t.hintColor),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis),
+                      Text(
+                        _rtl ? dirTextAr : dirTextEn,
+                        style: t.textTheme.bodyMedium
+                            ?.copyWith(color: t.hintColor),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                     ],
                   ),
                 ),
@@ -443,7 +498,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
                     children: [
                       const Icon(Icons.schedule, size: 18),
                       const SizedBox(width: 6),
-                      Text(_formatEta(widget.etaToNext!),
+                      Text(_fmtEta(widget.etaToNext!),
                           style: t.textTheme.bodyMedium),
                     ],
                   ),
@@ -464,6 +519,10 @@ class _OnboardPanelState extends State<_OnboardPanel>
                 prepareStopsAway: widget.prepareTransferStopsAway,
                 prepareToLineKey: widget.prepareTransferToLineKey,
                 prepareAtStation: widget.prepareAtStationName,
+                rtl: _rtl,
+                localizeDigits: _localizeDigits,
+                lineNameLocalized: _lineNameLocalized,
+                tr: _t,
               ),
             ],
 
@@ -475,7 +534,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
                   if (_hasFullLine)
                     ChoiceChip(
                       selected: _mode == _ViewMode.segment,
-                      label: const Text('Segment'),
+                      label: Text(_t('Segment', 'مقطع')),
                       onSelected: (_) => setState(() {
                         _mode = _ViewMode.segment;
                         _centerCurrent();
@@ -484,7 +543,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
                   if (_hasFullLine)
                     ChoiceChip(
                       selected: _mode == _ViewMode.fullLine,
-                      label: const Text('Full line'),
+                      label: Text(_t('Full line', 'الخط الكامل')),
                       onSelected: (_) => setState(() {
                         _mode = _ViewMode.fullLine;
                         _centerCurrent();
@@ -493,7 +552,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
                   if (_hasNextLine)
                     ChoiceChip(
                       selected: _mode == _ViewMode.nextLine,
-                      label: const Text('Next line'),
+                      label: Text(_t('Next line', 'الخط التالي')),
                       onSelected: (_) => setState(() {
                         _mode = _ViewMode.nextLine;
                         _centerCurrent();
@@ -549,6 +608,8 @@ class _OnboardPanelState extends State<_OnboardPanel>
                             isNextDot: isNext,
                             rtl: widget.isRTL,
                             forward: widget.forward,
+                            lineNameLocalized:
+                                _lineNameLocalized, // ✅ pass the callback here
                           );
                         },
                       ),
@@ -562,8 +623,8 @@ class _OnboardPanelState extends State<_OnboardPanel>
 
             // Next station card + chips
             _NextCard(
-              title: widget.isRTL ? 'المحطة التالية' : 'Next station',
-              name: widget.isRTL ? nextStop.nameAr : nextStop.nameEn,
+              title: _t('Next station', 'المحطة التالية'),
+              name: _rtl ? nextStop.nameAr : nextStop.nameEn,
               transfers: nextStop.transferLines,
               accent: lineColor,
 
@@ -578,16 +639,16 @@ class _OnboardPanelState extends State<_OnboardPanel>
               prepareTransferStopsAway: widget.prepareTransferStopsAway,
               prepareTransferToLineKey: widget.prepareTransferToLineKey,
               prepareAtStationName: widget.prepareAtStationName,
+
+              // localization utils
+              localizeDigits: _localizeDigits,
+              lineNameLocalized: _lineNameLocalized,
+              tr: _t,
             ),
           ],
         ),
       ),
     );
-  }
-
-  static String _formatEta(Duration d) {
-    if (d.inMinutes >= 1) return '${d.inMinutes} min';
-    return '${d.inSeconds}s';
   }
 }
 
@@ -604,6 +665,7 @@ class _StationColumn extends StatelessWidget {
     required this.isNextDot,
     required this.rtl,
     required this.forward,
+    required this.lineNameLocalized, // <-- added
   });
 
   final MetroStop stop;
@@ -616,6 +678,9 @@ class _StationColumn extends StatelessWidget {
 
   final bool rtl;
   final bool forward;
+
+  // Localizer passed from parent (_OnboardPanelState._lineNameLocalized)
+  final String Function(String) lineNameLocalized;
 
   @override
   Widget build(BuildContext context) {
@@ -685,8 +750,9 @@ class _StationColumn extends StatelessWidget {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             border: Border.all(
-                color: lineColor.withOpacity(0.35 + 0.25 * (1 - wave)),
-                width: 2),
+              color: lineColor.withOpacity(0.35 + 0.25 * (1 - wave)),
+              width: 2,
+            ),
           ),
         ),
       );
@@ -782,7 +848,12 @@ class _StationColumn extends StatelessWidget {
                   runSpacing: 4,
                   alignment: WrapAlignment.center,
                   children: stop.transferLines
-                      .map((l) => _TransferBadge(line: l, compact: true))
+                      .map((l) => _TransferBadge(
+                            line: l,
+                            compact: true,
+                            lineNameLocalized:
+                                lineNameLocalized, // use passed fn
+                          ))
                       .toList(),
                 ),
               ),
@@ -795,9 +866,14 @@ class _StationColumn extends StatelessWidget {
 }
 
 class _TransferBadge extends StatelessWidget {
-  const _TransferBadge({required this.line, this.compact = false});
+  const _TransferBadge({
+    required this.line,
+    this.compact = false,
+    required this.lineNameLocalized,
+  });
   final String line;
   final bool compact;
+  final String Function(String) lineNameLocalized;
 
   @override
   Widget build(BuildContext context) {
@@ -821,7 +897,7 @@ class _TransferBadge extends StatelessWidget {
               size: compact ? 10 : 12, color: color),
           const SizedBox(width: 4),
           Text(
-            line,
+            lineNameLocalized(line),
             style: t.textTheme.labelSmall?.copyWith(
               color: color,
               fontSize: compact ? 10 : null,
@@ -886,6 +962,12 @@ class _NextActionBanner extends StatelessWidget {
   final String? prepareToLineKey;
   final String? prepareAtStation;
 
+  // localization utils
+  final bool rtl;
+  final String Function(String) localizeDigits;
+  final String Function(String, String) tr;
+  final String Function(String) lineNameLocalized;
+
   const _NextActionBanner({
     required this.alight,
     required this.transfer,
@@ -894,6 +976,10 @@ class _NextActionBanner extends StatelessWidget {
     this.prepareStopsAway = 0,
     this.prepareToLineKey,
     this.prepareAtStation,
+    required this.rtl,
+    required this.localizeDigits,
+    required this.tr,
+    required this.lineNameLocalized,
   });
 
   @override
@@ -906,17 +992,16 @@ class _NextActionBanner extends StatelessWidget {
       bg = const Color(0xFFFFEBEE);
       border = const Color(0xFFE53935);
       icon = Icons.directions_walk_rounded;
-      title = _t(context, 'Alight at next station', 'انزل في المحطة التالية');
-      subtitle =
-          _t(context, 'Get ready to exit the train', 'استعد للنزول من القطار');
+      title = tr('Alight at next station', 'انزل في المحطة التالية');
+      subtitle = tr('Get ready to exit the train', 'استعد للنزول من القطار');
     } else if (transfer) {
       bg = const Color(0xFFFFF3E0);
       border = const Color(0xFFFB8C00);
       icon = Icons.swap_horiz_rounded;
       final line = (transferToLineKey ?? '').toLowerCase();
-      title = _t(context, 'Change line here', 'بدّل الخط هنا');
+      title = tr('Change line here', 'بدّل الخط هنا');
       subtitle =
-          '${_t(context, 'to', 'إلى')} ${_cap(line)} ${_t(context, 'line', 'الخط')}';
+          '${tr('to', 'إلى')} ${lineNameLocalized(line)} ${tr('line', 'الخط')}';
     } else if (prepare) {
       bg = const Color(0xFFFFF8E1); // very light amber
       border = const Color(0xFFFFC107); // amber
@@ -924,17 +1009,17 @@ class _NextActionBanner extends StatelessWidget {
       final toLine = (prepareToLineKey ?? '').toLowerCase();
       final atName = prepareAtStation ?? '-';
       final stops = prepareStopsAway > 0
-          ? ' ${_t(context, "in", "خلال")} $prepareStopsAway ${_t(context, "stops", "محطات")}'
+          ? ' ${tr("in", "خلال")} ${localizeDigits(prepareStopsAway.toString())} ${tr("stops", "محطات")}'
           : '';
-      title = _t(context, 'Get ready to change line', 'استعد لتبديل الخط');
+      title = tr('Get ready to change line', 'استعد لتبديل الخط');
       subtitle =
-          '${_t(context, "At", "في")} $atName • ${_t(context, "to", "إلى")} ${_cap(toLine)} ${_t(context, "line", "الخط")}$stops';
+          '${tr("At", "في")} $atName • ${tr("to", "إلى")} ${lineNameLocalized(toLine)} ${tr("line", "الخط")}$stops';
     } else {
       // Fallback (shouldn’t happen)
       bg = const Color(0xFFE3F2FD);
       border = const Color(0xFF1976D2);
       icon = Icons.info_outline;
-      title = _t(context, 'Info', 'معلومة');
+      title = tr('Info', 'معلومة');
       subtitle = '';
     }
 
@@ -979,11 +1064,6 @@ class _NextActionBanner extends StatelessWidget {
       ),
     );
   }
-
-  static String _t(BuildContext c, String en, String ar) =>
-      Directionality.of(c) == TextDirection.rtl ? ar : en;
-  static String _cap(String s) =>
-      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
 }
 
 // ─────────────────────────── Next station card ───────────────────────────
@@ -1005,6 +1085,11 @@ class _NextCard extends StatelessWidget {
     required this.prepareTransferStopsAway,
     required this.prepareTransferToLineKey,
     required this.prepareAtStationName,
+
+    // localization utils
+    required this.localizeDigits,
+    required this.lineNameLocalized,
+    required this.tr,
   });
 
   final String title;
@@ -1023,6 +1108,11 @@ class _NextCard extends StatelessWidget {
   final String? prepareTransferToLineKey;
   final String? prepareAtStationName;
 
+  // localization utils
+  final String Function(String) localizeDigits;
+  final String Function(String) lineNameLocalized;
+  final String Function(String, String) tr;
+
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
@@ -1030,25 +1120,26 @@ class _NextCard extends StatelessWidget {
     final List<Widget> chips = [];
     if (alightHere) {
       chips.add(_chip(context, Icons.directions_walk_rounded,
-          _t(context, 'Alight here', 'انزل هنا'), const Color(0xFFE53935)));
+          tr('Alight here', 'انزل هنا'), const Color(0xFFE53935)));
     } else if (transferHere) {
       final lc = (transferToLineKey ?? '').toLowerCase();
       final c = _lineColor(lc) ?? const Color(0xFFFB8C00);
       chips.add(_chip(
         context,
         Icons.swap_horiz_rounded,
-        '${_t(context, 'Transfer', 'تحويل')} → ${_cap(lc)}',
+        '${tr('Transfer', 'تحويل')} → ${lineNameLocalized(lc)}',
         c,
       ));
     } else if (prepareTransferSoon) {
       final lc = (prepareTransferToLineKey ?? '').toLowerCase();
       final c = _lineColor(lc) ?? const Color(0xFFFFC107);
-      final stops =
-          prepareTransferStopsAway > 0 ? ' · $prepareTransferStopsAway' : '';
+      final stops = prepareTransferStopsAway > 0
+          ? ' · ${localizeDigits(prepareTransferStopsAway.toString())}'
+          : '';
       chips.add(_chip(
         context,
         Icons.schedule_rounded,
-        '${_t(context, 'Prepare to transfer', 'استعد للتحويل')} → ${_cap(lc)}$stops',
+        '${tr('Prepare to transfer', 'استعد للتحويل')} → ${lineNameLocalized(lc)}$stops',
         c,
       ));
     }
@@ -1094,7 +1185,12 @@ class _NextCard extends StatelessWidget {
             Wrap(
               spacing: 6,
               runSpacing: 6,
-              children: transfers.map((l) => _TransferBadge(line: l)).toList(),
+              children: transfers
+                  .map((l) => _TransferBadge(
+                        line: l,
+                        lineNameLocalized: lineNameLocalized,
+                      ))
+                  .toList(),
             ),
           ],
         ],
@@ -1117,12 +1213,6 @@ class _NextCard extends StatelessWidget {
       ]),
     );
   }
-
-  static String _t(BuildContext c, String en, String ar) =>
-      Directionality.of(c) == TextDirection.rtl ? ar : en;
-
-  static String _cap(String s) =>
-      s.isEmpty ? s : s[0].toUpperCase() + s.substring(1);
 
   static Color? _lineColor(String key) {
     switch (key) {

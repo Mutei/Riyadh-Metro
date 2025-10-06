@@ -1,3 +1,4 @@
+// lib/screens/travel_history_screen.dart
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -6,7 +7,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 
 import '../constants/colors.dart';
 import '../localization/language_constants.dart';
-import '../utils/geo_utils.dart';
+import '../utils/geo_utils.dart'; // kept for other helpers if you use it elsewhere
 import '../services/travel_history_service.dart';
 
 class TravelHistoryScreen extends StatefulWidget {
@@ -48,6 +49,67 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     if (s.isEmpty || s.toLowerCase() == 'null') return fb;
     return s;
   }
+
+  bool _isArabic(BuildContext ctx) =>
+      Localizations.localeOf(ctx).languageCode.toLowerCase().startsWith('ar');
+
+  String _localizeDigits(BuildContext ctx, String input) {
+    if (!_isArabic(ctx)) return input;
+    const western = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    const arabic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+    final buf = StringBuffer();
+    for (final ch in input.split('')) {
+      final i = western.indexOf(ch);
+      buf.write(i >= 0 ? arabic[i] : ch);
+    }
+    return buf.toString();
+  }
+
+  /// Localized distance: meters < 1000 show "123 م", otherwise "12.3 كم".
+  /// Uses Arabic‑Indic digits when locale is Arabic.
+  String _fmtDistance(BuildContext ctx, int meters) {
+    final isAr = _isArabic(ctx);
+    final mLabel =
+        getTranslated(ctx, 'm').isEmpty ? 'm' : getTranslated(ctx, 'm');
+    final kmLabel =
+        getTranslated(ctx, 'km').isEmpty ? 'km' : getTranslated(ctx, 'km');
+
+    String out;
+    if (meters < 1000) {
+      out = isAr
+          ? '${meters.toString()} $mLabel'
+          : '${meters.toString()} $mLabel';
+    } else {
+      final km = (meters / 1000.0);
+      // one decimal like your UI
+      final s = km.toStringAsFixed(1);
+      // In Arabic we usually show unit after the number as well
+      out = '$s $kmLabel';
+    }
+    return _localizeDigits(ctx, out);
+  }
+
+  String _fmtDurationLocalized(BuildContext ctx, int seconds) {
+    final m = (seconds / 60).round();
+    if (m < 60) {
+      final txt = '$m ${tr("min", "min")}';
+      return _localizeDigits(ctx, txt);
+    }
+    final h = m ~/ 60;
+    final mm = m % 60;
+    final minLabel = tr("min", "min");
+    final hrLabel = tr("hr", "hr");
+    final txt = '$h $hrLabel ${mm > 0 ? "$mm $minLabel" : ""}'.trim();
+    return _localizeDigits(ctx, txt);
+  }
+
+  String _fmtClockLocalized(BuildContext ctx, DateTime d) {
+    final s = '${_2(d.hour)}:${_2(d.minute)}';
+    return _localizeDigits(ctx, s);
+  }
+
+  String _shortLocalized(BuildContext ctx, DateTime d) =>
+      _localizeDigits(ctx, '${_2(d.month)}/${_2(d.day)}');
 
   @override
   void initState() {
@@ -282,7 +344,8 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
       appBar: AppBar(
         title: _selectionMode
             ? Text(
-                '${_selectedIds.length} ${tr("Selected", "Selected")}',
+                _localizeDigits(context,
+                    '${_selectedIds.length} ${tr("Selected", "Selected")}'),
               )
             : Text(tr('Travel history', 'Travel history')),
         centerTitle: true,
@@ -432,7 +495,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
             label: Text(
               _range == null
                   ? tr('filter.dates', 'Dates')
-                  : '${_short(_range!.start)} – ${_short(_range!.end)}',
+                  : '${_shortLocalized(context, _range!.start)} – ${_shortLocalized(context, _range!.end)}',
             ),
             style: OutlinedButton.styleFrom(
               foregroundColor: Colors.black87,
@@ -461,7 +524,8 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
           if (_query.trim().isNotEmpty)
             _pill('${tr("Search", "Search")}: "${_query.trim()}"'),
           if (_range != null)
-            _pill('${_short(_range!.start)}–${_short(_range!.end)}'),
+            _pill(
+                '${_shortLocalized(context, _range!.start)}–${_shortLocalized(context, _range!.end)}'),
           TextButton.icon(
             onPressed: _clearAllFilters,
             icon: const Icon(Icons.filter_alt_off_rounded),
@@ -527,10 +591,16 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   }
 
   Widget _lineChip(String key) {
-    final text = key.isNotEmpty
-        ? '${key[0].toUpperCase()}${key.substring(1).toLowerCase()}'
-        : key;
-    final c = _lineColor(text);
+    // Show translated color name, e.g., 'Blue' -> 'أزرق'
+    final label = getTranslated(
+        context, key[0].toUpperCase() + key.substring(1).toLowerCase());
+    final shown = (label.isEmpty || label.toLowerCase() == 'null')
+        ? (key.isNotEmpty
+            ? '${key[0].toUpperCase()}${key.substring(1).toLowerCase()}'
+            : key)
+        : label;
+
+    final c = _lineColor(key);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
@@ -546,7 +616,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
               height: 10,
               decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
           const SizedBox(width: 6),
-          Text(text, style: TextStyle(fontWeight: FontWeight.w700, color: c)),
+          Text(shown, style: TextStyle(fontWeight: FontWeight.w700, color: c)),
         ],
       ),
     );
@@ -557,10 +627,11 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     final accent = isCar ? const Color(0xFF1976D2) : const Color(0xFF00897B);
     final selected = _selectedIds.contains(e.id);
 
-    // Times (new)
-    final startTime = _fmtTime(e.startedAt);
-    final endTime =
-        e.finishedAt != null ? _fmtTime(e.finishedAt!) : tr('—', '—');
+    // Times (localized)
+    final startTime = _fmtClockLocalized(context, e.startedAt);
+    final endTime = e.finishedAt != null
+        ? _fmtClockLocalized(context, e.finishedAt!)
+        : tr('—', '—');
 
     final lines = e.metroLineKeys ?? const [];
 
@@ -655,17 +726,22 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           _chip(
-                              icon: Icons.schedule,
-                              text: _fmtDuration(e.durationSeconds)),
+                            icon: Icons.schedule,
+                            text: _fmtDurationLocalized(
+                                context, e.durationSeconds),
+                          ),
                           _chip(
-                              icon: Icons.pin_drop_outlined,
-                              text: fmtMeters(e.distanceMeters.toDouble())),
+                            icon: Icons.pin_drop_outlined,
+                            text: _fmtDistance(context, e.distanceMeters),
+                          ),
                           _chip(
-                              icon: Icons.play_arrow_rounded,
-                              text: '${tr("Start", "Start")}: $startTime'),
+                            icon: Icons.play_arrow_rounded,
+                            text: '${tr("Start", "Start")}: $startTime',
+                          ),
                           _chip(
-                              icon: Icons.stop_rounded,
-                              text: '${tr("End", "End")}: $endTime'),
+                            icon: Icons.stop_rounded,
+                            text: '${tr("End", "End")}: $endTime',
+                          ),
                         ],
                       ),
                     ],
@@ -821,24 +897,6 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     return '${dt.year}-${_2(dt.month)}-${_2(dt.day)}';
   }
 
-  String _fmtDuration(int seconds) {
-    final m = (seconds / 60).round();
-    if (m < 60) return '$m ${tr("min", "min")}';
-    final h = m ~/ 60;
-    final mm = m % 60;
-    final minLabel = tr("min", "min");
-    final hrLabel = tr("hr", "hr");
-    return '$h $hrLabel ${mm > 0 ? "$mm $minLabel" : ""}'.trim();
-  }
-
-  String _fmtTime(DateTime d) {
-    final h = _2(d.hour);
-    final m = _2(d.minute);
-    return '$h:$m';
-  }
-
-  String _short(DateTime d) => '${_2(d.month)}/${_2(d.day)}';
-
   String _2(int n) => n.toString().padLeft(2, '0');
 
   Widget _emptyState(BuildContext context) {
@@ -885,6 +943,61 @@ class _TripDetailsSheet extends StatefulWidget {
 }
 
 class _TripDetailsSheetState extends State<_TripDetailsSheet> {
+  bool _isArabic(BuildContext ctx) =>
+      Localizations.localeOf(ctx).languageCode.toLowerCase().startsWith('ar');
+
+  String _localizeDigits(BuildContext ctx, String input) {
+    if (!_isArabic(ctx)) return input;
+    const western = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    const arabic = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+    final buf = StringBuffer();
+    for (final ch in input.split('')) {
+      final i = western.indexOf(ch);
+      buf.write(i >= 0 ? arabic[i] : ch);
+    }
+    return buf.toString();
+  }
+
+  String _fmtDistance(BuildContext ctx, int meters) {
+    final mLabel =
+        getTranslated(ctx, 'm').isEmpty ? 'm' : getTranslated(ctx, 'm');
+    final kmLabel =
+        getTranslated(ctx, 'km').isEmpty ? 'km' : getTranslated(ctx, 'km');
+    String out;
+    if (meters < 1000) {
+      out = '$meters $mLabel';
+    } else {
+      final s = (meters / 1000.0).toStringAsFixed(1);
+      out = '$s $kmLabel';
+    }
+    return _localizeDigits(ctx, out);
+  }
+
+  String _fmtClock(BuildContext ctx, DateTime dt) =>
+      _localizeDigits(ctx, '${_2(dt.hour)}:${_2(dt.minute)}');
+
+  String _fmtDuration(BuildContext ctx, int seconds) {
+    final m = (seconds / 60).round();
+    if (m < 60) return _localizeDigits(ctx, '$m ${getTranslated(ctx, "min")}');
+    final h = m ~/ 60;
+    final mm = m % 60;
+    final txt =
+        '$h ${getTranslated(ctx, "hr")} ${mm > 0 ? "$mm ${getTranslated(ctx, "min")}" : ""}';
+    return _localizeDigits(ctx, txt.trim());
+  }
+
+  String _friendlyDate(BuildContext ctx, DateTime dt) {
+    final now = DateTime.now();
+    final d = DateTime(dt.year, dt.month, dt.day);
+    final today = DateTime(now.year, now.month, now.day);
+    final yday = today.subtract(const Duration(days: 1));
+    if (d == today) return getTranslated(ctx, 'Today');
+    if (d == yday) return getTranslated(ctx, 'Yesterday');
+    final raw =
+        '${dt.year}-${_2(dt.month)}-${_2(dt.day)} ${_2(dt.hour)}:${_2(dt.minute)}';
+    return _localizeDigits(ctx, raw);
+  }
+
   Color _lineColor(String key) {
     switch (key.toLowerCase()) {
       case 'blue':
@@ -905,10 +1018,15 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
   }
 
   Widget _lineChip(String key) {
-    final text = key.isNotEmpty
-        ? '${key[0].toUpperCase()}${key.substring(1).toLowerCase()}'
-        : key;
-    final c = _lineColor(text);
+    final translated = getTranslated(
+        context, key[0].toUpperCase() + key.substring(1).toLowerCase());
+    final text = (translated.isEmpty || translated.toLowerCase() == 'null')
+        ? (key.isNotEmpty
+            ? '${key[0].toUpperCase()}${key.substring(1).toLowerCase()}'
+            : key)
+        : translated;
+
+    final c = _lineColor(key);
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
@@ -941,7 +1059,6 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
         builder: (ctx, cons) => SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
           child: ConstrainedBox(
-            // ensures Column can take full height if smaller, otherwise scrolls
             constraints:
                 BoxConstraints(minHeight: 0, maxHeight: cons.maxHeight),
             child: Column(
@@ -959,7 +1076,7 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
                       _chip(Icons.schedule,
                           _fmtDuration(context, e.durationSeconds)),
                       _chip(Icons.pin_drop_outlined,
-                          fmtMeters(e.distanceMeters.toDouble())),
+                          _fmtDistance(context, e.distanceMeters)),
                       _datePill(_friendlyDate(context, e.startedAt)),
                     ],
                   ),
@@ -1039,7 +1156,7 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
     );
   }
 
-  // --- UI helpers (unchanged) ---
+  // --- UI helpers (unchanged except numbers localization) ---
   Widget _kv(String k, String v) => Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Row(
@@ -1087,7 +1204,6 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
             const Icon(Icons.event, size: 16, color: Colors.black87),
             const SizedBox(width: 6),
             Flexible(
-              // avoids overflow on small widths
               child: Text(
                 text,
                 maxLines: 1,
@@ -1116,28 +1232,6 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
         Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
       ]),
     );
-  }
-
-  String _friendlyDate(BuildContext ctx, DateTime dt) {
-    final now = DateTime.now();
-    final d = DateTime(dt.year, dt.month, dt.day);
-    final today = DateTime(now.year, now.month, now.day);
-    final yday = today.subtract(const Duration(days: 1));
-    if (d == today) return getTranslated(ctx, 'Today');
-    if (d == yday) return getTranslated(ctx, 'Yesterday');
-    return '${dt.year}-${_2(dt.month)}-${_2(dt.day)} ${_2(dt.hour)}:${_2(dt.minute)}';
-  }
-
-  String _fmtClock(BuildContext ctx, DateTime dt) =>
-      '${_2(dt.hour)}:${_2(dt.minute)}';
-
-  String _fmtDuration(BuildContext ctx, int seconds) {
-    final m = (seconds / 60).round();
-    if (m < 60) return '$m ${getTranslated(ctx, "min")}';
-    final h = m ~/ 60;
-    final mm = m % 60;
-    return '$h ${getTranslated(ctx, "hr")} ${mm > 0 ? "$mm ${getTranslated(ctx, "min")}" : ""}'
-        .trim();
   }
 
   String _2(int n) => n.toString().padLeft(2, '0');
@@ -1199,7 +1293,7 @@ class TravelEntry {
   static List<String>? _readLines(dynamic v) {
     if (v == null) return null;
     if (v is List) {
-      // ensure strings & Capitalize first letter
+      // ensure strings & Capitalize first letter (key used for color/translation)
       return v
           .map((e) => (e?.toString() ?? '').trim())
           .where((s) => s.isNotEmpty)
