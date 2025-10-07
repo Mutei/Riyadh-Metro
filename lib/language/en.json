@@ -285,7 +285,7 @@
     "Failed to save": "Failed to save",
     "Start trip": "Start trip",
     "End trip": "End trip",
-    "You have arrived.": "You have arrived.",
+    "You have arrived.": "You have arrived at your destination. Thank you for using the Public Transportation Network",
     "Pick a destination first.": "Pick a destination first.",
     "Delete favorite": "Delete favorite",
     "Are you sure you want to delete this favorite?": "Are you sure you want to delete this favorite?",
@@ -424,6 +424,15 @@
       "Lines used": "Lines used",
       "From station": "From station",
       "To station": "To station",
-      "Get ready to change lines at": "Get ready to change lines at"
-
+      "Get ready to change lines at": "Get ready to change lines at",
+      "drawer.themeSettings": "Theme Settings",
+      "drawer.themeSubtitle": "Light, Dark, or follow System",
+      "theme.light": "Light",
+      "theme.dark": "Dark",
+      "theme.system": "System",
+      "OK": "OK",
+      "theme.smart": "Auto (Environment)",
+      "theme.smart.subtitle": "Daylight = Light, Night/Tunnel = Dark",
+      "theme.ambient": "Auto (Ambient)",
+      "theme.ambient.subtitle": "Light mode in bright places; dark mode in low light (like tunnels)."
   }

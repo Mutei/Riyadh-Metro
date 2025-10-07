@@ -87,16 +87,23 @@ class _SearchFieldState extends State<SearchField> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final primary = theme.colorScheme.primary;
+    final cs = theme.colorScheme;
+
+    // Colors that adapt to theme
+    final onSurface = cs.onSurface;
+    final iconActive = onSurface.withOpacity(0.65);
+    final iconInactive = onSurface.withOpacity(0.30);
+    final hintColor = onSurface.withOpacity(0.50);
+    final outline = cs.outline;
 
     // Leading (prefix): Clear "X"
     final Widget? prefix = widget.showClearButton
         ? IconButton(
             tooltip: MaterialLocalizations.of(context).deleteButtonTooltip,
-            icon: Icon(Icons.close_rounded,
-                color: _hasText && !widget.readOnly
-                    ? Colors.black54
-                    : Colors.black26),
+            icon: Icon(
+              Icons.close_rounded,
+              color: (_hasText && !widget.readOnly) ? iconActive : iconInactive,
+            ),
             onPressed: (_hasText && !widget.readOnly) ? _handleClear : null,
           )
         : null;
@@ -104,19 +111,20 @@ class _SearchFieldState extends State<SearchField> {
     // Trailing (suffix): Search icon -> triggers submit
     final Widget suffix = IconButton(
       tooltip: MaterialLocalizations.of(context).searchFieldLabel,
-      icon: Icon(widget.trailingIcon, color: Colors.black54),
+      icon: Icon(widget.trailingIcon, color: iconActive),
       onPressed: widget.readOnly ? null : _submitCurrent,
     );
 
     final usePrefixForClear = widget.clearOnLeft;
 
+    final borderRadius = const BorderRadius.all(Radius.circular(18));
     final InputBorder enabled = OutlineInputBorder(
-      borderRadius: const BorderRadius.all(Radius.circular(18)),
-      borderSide: const BorderSide(color: Colors.black12),
+      borderRadius: borderRadius,
+      borderSide: BorderSide(color: outline, width: 1),
     );
     final InputBorder focused = OutlineInputBorder(
-      borderRadius: const BorderRadius.all(Radius.circular(18)),
-      borderSide: BorderSide(color: primary, width: 2),
+      borderRadius: borderRadius,
+      borderSide: BorderSide(color: cs.primary, width: 2),
     );
 
     return TextField(
@@ -130,9 +138,11 @@ class _SearchFieldState extends State<SearchField> {
       textCapitalization: TextCapitalization.sentences,
       decoration: InputDecoration(
         hintText: widget.hint,
+        hintStyle: TextStyle(color: hintColor),
         isDense: true,
         filled: true,
-        fillColor: Colors.white,
+        // Use themed surface for both light & dark (plays nice with M3)
+        fillColor: theme.inputDecorationTheme.fillColor ?? cs.surface,
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
 
@@ -145,6 +155,8 @@ class _SearchFieldState extends State<SearchField> {
         enabledBorder: enabled,
         focusedBorder: focused,
       ),
+      style: theme.textTheme.bodyLarge, // inherits proper text color
+      cursorColor: cs.primary,
     );
   }
 }

@@ -41,7 +41,6 @@ class _TicketRecord {
     required this.expiresAt,
   });
 
-  // --- parsing helpers (compatible with your existing DB strings) ---
   static String _s(dynamic v) => v is String ? v : '';
   static int _i(dynamic v) => v is num ? v.toInt() : 0;
   static bool _b(dynamic v) => v == true;
@@ -123,16 +122,20 @@ class PurchaseHistoryScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
     return Scaffold(
-      backgroundColor: AppColors.kBackGroundColor,
+      backgroundColor: theme.scaffoldBackgroundColor, // ✅ theme-aware
       appBar: AppBar(
-        backgroundColor: AppColors.kBackGroundColor,
+        backgroundColor: theme.scaffoldBackgroundColor, // ✅ theme-aware
         elevation: 0,
         centerTitle: false,
         title: Text(
           getTranslated(context, 'Purchase History'),
-          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.w900),
+          style: theme.textTheme.titleLarge?.copyWith(
+            fontWeight: FontWeight.w900,
+            color: cs.onSurface,
+          ),
         ),
       ),
       body: StreamBuilder<DatabaseEvent>(
@@ -184,7 +187,7 @@ class PurchaseHistoryScreen extends StatelessWidget {
           }
 
           final groupKeys = groups.keys.toList();
-          // Responsive: list on phones, grid on larger screens
+
           return LayoutBuilder(
             builder: (context, constraints) {
               final wide = constraints.maxWidth >= 700;
@@ -196,8 +199,8 @@ class PurchaseHistoryScreen extends StatelessWidget {
                       sliver: SliverToBoxAdapter(
                         child: Text(
                           gk,
-                          style: const TextStyle(
-                            color: Colors.black54,
+                          style: theme.textTheme.labelLarge?.copyWith(
+                            color: cs.onSurface.withOpacity(0.65),
                             fontWeight: FontWeight.w800,
                             letterSpacing: .2,
                           ),
@@ -218,17 +221,18 @@ class PurchaseHistoryScreen extends StatelessWidget {
                     else
                       SliverPadding(
                         padding: const EdgeInsets.symmetric(horizontal: 16),
-                        sliver: SliverGrid.builder(
-                          itemCount: groups[gk]!.length,
+                        sliver: SliverGrid(
                           gridDelegate:
                               const SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: 2,
                             crossAxisSpacing: 12,
                             mainAxisSpacing: 12,
-                            childAspectRatio: 16 / 7, // roomy, good for tablets
+                            childAspectRatio: 16 / 7,
                           ),
-                          itemBuilder: (_, i) =>
-                              _HistoryTile(record: groups[gk]![i]),
+                          delegate: SliverChildBuilderDelegate(
+                            (_, i) => _HistoryTile(record: groups[gk]![i]),
+                            childCount: groups[gk]!.length,
+                          ),
                         ),
                       ),
                   ],
@@ -243,19 +247,21 @@ class PurchaseHistoryScreen extends StatelessWidget {
   }
 
   Widget _empty(BuildContext context, ThemeData theme) {
+    final cs = theme.colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 28),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.receipt_long_rounded,
-                size: 56, color: Colors.black26),
+            Icon(Icons.receipt_long_rounded,
+                size: 56, color: cs.onSurface.withOpacity(0.26)),
             const SizedBox(height: 12),
             Text(
               getTranslated(context, 'No purchases yet'),
               style: theme.textTheme.titleMedium?.copyWith(
                 fontWeight: FontWeight.w800,
+                color: cs.onSurface,
               ),
             ),
             const SizedBox(height: 6),
@@ -263,7 +269,9 @@ class PurchaseHistoryScreen extends StatelessWidget {
               getTranslated(context,
                   'Your tickets will appear here once you purchase them.'),
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.black54),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: cs.onSurface.withOpacity(0.65),
+              ),
             ),
           ],
         ),
@@ -319,11 +327,13 @@ class _HistoryTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isFirst = record.klass == TicketClass.firstClass;
-    final labelBg = isFirst ? const Color(0xFF8F7A4E) : const Color(0xFFE6E8DC);
-    final labelFg = isFirst ? Colors.white : Colors.black87;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
 
-    // localized status text
+    final isFirst = record.klass == TicketClass.firstClass;
+    final labelBg = isFirst ? const Color(0xFF8F7A4E) : cs.surfaceVariant;
+    final labelFg = isFirst ? Colors.white : cs.onSurface;
+
     final String statusText = record.expired
         ? getTranslated(context, 'Expired')
         : (record.activated
@@ -331,7 +341,7 @@ class _HistoryTile extends StatelessWidget {
             : getTranslated(context, 'Not activated'));
 
     return Material(
-      color: Colors.white,
+      color: theme.cardColor, // ✅ theme-aware card
       borderRadius: BorderRadius.circular(16),
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -362,21 +372,21 @@ class _HistoryTile extends StatelessWidget {
                       children: [
                         Expanded(
                           child: Text(
-                            // LOCALIZED product title
                             getTranslated(context, record.title),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
+                            style: theme.textTheme.titleSmall?.copyWith(
                               fontWeight: FontWeight.w900,
-                              fontSize: 16,
+                              color: cs.onSurface,
                             ),
                           ),
                         ),
                         Text(
                           '﷼ ${record.priceSar}',
-                          style: const TextStyle(
+                          style: theme.textTheme.titleSmall?.copyWith(
                             fontWeight: FontWeight.w900,
-                            fontFeatures: [FontFeature.tabularFigures()],
+                            color: cs.onSurface,
+                            fontFeatures: const [FontFeature.tabularFigures()],
                           ),
                         ),
                       ],
@@ -387,8 +397,10 @@ class _HistoryTile extends StatelessWidget {
                       children: [
                         Text(
                           '${getTranslated(context, 'Purchased on')} ${record.purchasedAtStr ?? (record.purchasedAt != null ? _fmt(record.purchasedAt!) : getTranslated(context, 'Unknown'))}',
-                          style: const TextStyle(
-                              color: Colors.black54, fontSize: 12),
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: cs.onSurface.withOpacity(0.65),
+                            fontSize: 12,
+                          ),
                         ),
                         const Spacer(),
                         Container(
@@ -403,9 +415,10 @@ class _HistoryTile extends StatelessWidget {
                                 ? getTranslated(context, 'FIRST CLASS')
                                 : getTranslated(context, 'REGULAR'),
                             style: TextStyle(
-                                color: labelFg,
-                                fontSize: 11,
-                                fontWeight: FontWeight.w700),
+                              color: labelFg,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                       ],
@@ -421,12 +434,14 @@ class _HistoryTile extends StatelessWidget {
                             _secondaryLine(context),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(
-                                color: Colors.black54, fontSize: 12),
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: cs.onSurface.withOpacity(0.65),
+                              fontSize: 12,
+                            ),
                           ),
                         ),
-                        const Icon(Icons.chevron_right_rounded,
-                            color: Colors.black26),
+                        Icon(Icons.chevron_right_rounded,
+                            color: cs.onSurface.withOpacity(0.30)),
                       ],
                     ),
                   ],
@@ -452,11 +467,14 @@ class _HistoryTile extends StatelessWidget {
   }
 
   void _showDetails(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
       isScrollControlled: false,
-      backgroundColor: Colors.white,
+      backgroundColor: theme.dialogBackgroundColor, // ✅ theme-aware
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
@@ -467,21 +485,23 @@ class _HistoryTile extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                // LOCALIZED product title
                 getTranslated(context, record.title),
                 textAlign: TextAlign.center,
-                style:
-                    const TextStyle(fontWeight: FontWeight.w900, fontSize: 18),
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  color: cs.onSurface,
+                ),
               ),
               const SizedBox(height: 10),
               _kv(context, getTranslated(context, 'Price'),
                   '﷼ ${record.priceSar}'),
               _kv(
-                  context,
-                  getTranslated(context, 'Class'),
-                  record.klass == TicketClass.firstClass
-                      ? getTranslated(context, 'First Class')
-                      : getTranslated(context, 'Regular')),
+                context,
+                getTranslated(context, 'Class'),
+                record.klass == TicketClass.firstClass
+                    ? getTranslated(context, 'First Class')
+                    : getTranslated(context, 'Regular'),
+              ),
               _kv(context, getTranslated(context, 'Purchased on'),
                   record.purchasedAtStr ?? '-'),
               _kv(context, getTranslated(context, 'Activated at'),
@@ -489,13 +509,14 @@ class _HistoryTile extends StatelessWidget {
               _kv(context, getTranslated(context, 'Expires at'),
                   record.expiresAtStr ?? '-'),
               _kv(
-                  context,
-                  getTranslated(context, 'Status'),
-                  record.expired
-                      ? getTranslated(context, 'Expired')
-                      : (record.activated
-                          ? getTranslated(context, 'Activated')
-                          : getTranslated(context, 'Not activated'))),
+                context,
+                getTranslated(context, 'Status'),
+                record.expired
+                    ? getTranslated(context, 'Expired')
+                    : (record.activated
+                        ? getTranslated(context, 'Activated')
+                        : getTranslated(context, 'Not activated')),
+              ),
               const SizedBox(height: 6),
             ],
           ),
@@ -505,19 +526,29 @@ class _HistoryTile extends StatelessWidget {
   }
 
   Widget _kv(BuildContext context, String k, String v) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Row(
         children: [
           SizedBox(
             width: 120,
-            child: Text(k, style: const TextStyle(color: Colors.black54)),
+            child: Text(
+              k,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: cs.onSurface.withOpacity(0.65),
+              ),
+            ),
           ),
           Expanded(
             child: Text(
               v,
               textAlign: TextAlign.right,
-              style: const TextStyle(fontWeight: FontWeight.w700),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: cs.onSurface,
+              ),
             ),
           ),
         ],
@@ -533,6 +564,8 @@ class _StatusChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
@@ -542,10 +575,9 @@ class _StatusChip extends StatelessWidget {
       ),
       child: Text(
         text,
-        style: TextStyle(
+        style: theme.textTheme.labelSmall?.copyWith(
           color: color,
           fontWeight: FontWeight.w800,
-          fontSize: 11,
           letterSpacing: .2,
         ),
       ),

@@ -136,8 +136,20 @@ class _LoginScreenState extends State<LoginScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final labelStyle = TextStyle(
+      fontSize: 14,
+      fontWeight: FontWeight.w500,
+      color: theme.textTheme.bodyLarge?.color,
+    );
+    final titleStyle = TextStyle(
+      fontSize: 26,
+      fontWeight: FontWeight.w600,
+      color: theme.textTheme.headlineSmall?.color,
+    );
+
     return Scaffold(
-      backgroundColor: AppColors.kBackGroundColor,
+      backgroundColor: theme.scaffoldBackgroundColor, // theme-aware
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
@@ -165,14 +177,12 @@ class _LoginScreenState extends State<LoginScreen> {
                       10.kH,
                       Text(
                         getTranslated(context, 'login.title'),
-                        style: const TextStyle(
-                            fontSize: 26, fontWeight: FontWeight.w600),
+                        style: titleStyle,
                       ),
                       24.kH,
                       Text(
                         getTranslated(context, 'login.identifier.label'),
-                        style: const TextStyle(
-                            fontSize: 14, fontWeight: FontWeight.w500),
+                        style: labelStyle,
                       ),
                       8.kH,
                       TextField(
@@ -186,8 +196,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       16.kH,
                       Text(
                         getTranslated(context, 'login.password.label'),
-                        style: const TextStyle(
-                            fontSize: 14, fontWeight: FontWeight.w500),
+                        style: labelStyle,
                       ),
                       8.kH,
                       TextField(
@@ -215,7 +224,8 @@ class _LoginScreenState extends State<LoginScreen> {
                         child: TextButton(
                           onPressed: _busy ? null : () {}, // TODO
                           child: Text(
-                              getTranslated(context, 'login.forgotPassword')),
+                            getTranslated(context, 'login.forgotPassword'),
+                          ),
                         ),
                       ),
                       16.kH,
@@ -234,6 +244,7 @@ class _LoginScreenState extends State<LoginScreen> {
                               )
                             : Text(
                                 getTranslated(context, 'login.signIn'),
+                                // White text works well on brand green in both themes
                                 style: const TextStyle(color: Colors.white),
                               ),
                       ),

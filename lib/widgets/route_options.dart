@@ -44,48 +44,65 @@ class RouteOptionsSheet extends StatelessWidget {
   double _deg2rad(double d) => d * math.pi / 180.0;
 
   int _desiredCountByDistanceMeters(double meters) {
-    // Tune thresholds as you like
     if (meters < 4000) return 3; // < 4 km → 3 routes
     if (meters < 9000) return 4; // 4–9 km → 4 routes
     return 5; // >= 9 km → 5 routes
   }
 
   Widget _lineChip(BuildContext context, String key) {
-    final c = metroLineColors[key] ?? Colors.grey;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final c = metroLineColors[key] ?? cs.secondary; // fallback if not found
+    final bool isDark = theme.brightness == Brightness.dark;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
-        color: c.withOpacity(.15),
+        color: c.withOpacity(isDark ? .22 : .15),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: c.withOpacity(.35)),
+        border: Border.all(color: c.withOpacity(.45)),
       ),
-      child: Row(children: [
-        const Icon(Icons.directions_subway_filled, size: 16),
-        const SizedBox(width: 4),
-        // Text('${cap(key)} ${getTranslated(context, 'line')}',
-        //     style: const TextStyle(fontWeight: FontWeight.w700)),
-        Text(
-          '${getTranslated(context, key)}',
-          style: const TextStyle(fontWeight: FontWeight.w700),
-        ),
-      ]),
+      child: Row(
+        children: [
+          Icon(Icons.directions_subway_filled, size: 16, color: c),
+          const SizedBox(width: 4),
+          Text(
+            getTranslated(context, key),
+            style: theme.textTheme.labelLarge
+                ?.copyWith(fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    final onSurface = cs.onSurface;
+    final onSurfaceSubtle = onSurface.withOpacity(0.65);
+    final outline = cs.outline;
+    final outlineVariant = cs.outlineVariant;
+    final bgColor = theme.dialogBackgroundColor; // ✅ theme-aware background
+
     // Guard: no options
     if (options.isEmpty) {
       return SafeArea(
-        child: Padding(
+        child: Container(
+          color: bgColor, // ✅ apply background
           padding: const EdgeInsets.all(16),
-          child: Text(getTranslated(context, 'No routes found'),
-              style: const TextStyle(fontWeight: FontWeight.w600)),
+          child: Text(
+            getTranslated(context, 'No routes found'),
+            style: theme.textTheme.titleMedium
+                ?.copyWith(fontWeight: FontWeight.w600),
+          ),
         ),
       );
     }
 
-    // Use the origin/dest common to all options to decide how many to show
+    // Decide how many routes to show based on distance
     final origin = options.first.originLL;
     final dest = options.first.destLL;
     final meters = _distMeters(origin, dest);
@@ -93,17 +110,19 @@ class RouteOptionsSheet extends StatelessWidget {
     final visible = options.take(desired).toList();
 
     return SafeArea(
-      child: Padding(
+      child: Container(
+        color: bgColor, // ✅ apply background
         padding: const EdgeInsets.only(bottom: 10),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 12),
+            // drag handle
             Container(
               width: 42,
               height: 4,
               decoration: BoxDecoration(
-                color: Colors.black12,
+                color: onSurface.withOpacity(0.24),
                 borderRadius: BorderRadius.circular(100),
               ),
             ),
@@ -114,9 +133,9 @@ class RouteOptionsSheet extends StatelessWidget {
                 alignment: Alignment.centerLeft,
                 child: Text(
                   '${getTranslated(context, 'Routes to')} $destLabel',
-                  style: const TextStyle(
-                    fontSize: 16,
+                  style: theme.textTheme.titleMedium?.copyWith(
                     fontWeight: FontWeight.w700,
+                    color: onSurface,
                   ),
                 ),
               ),
@@ -126,31 +145,44 @@ class RouteOptionsSheet extends StatelessWidget {
               child: ListView.separated(
                 shrinkWrap: true,
                 itemCount: visible.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
+                separatorBuilder: (_, __) =>
+                    Divider(height: 1, color: outlineVariant),
                 itemBuilder: (_, i) {
                   final r = visible[i];
-                  final eta = DateTime.now()
-                      .add(Duration(seconds: r.totalSeconds.round()));
+                  final eta = DateTime.now().add(
+                    Duration(seconds: r.totalSeconds.round()),
+                  );
+                  final bool isDark = theme.brightness == Brightness.dark;
+
                   return ListTile(
                     contentPadding:
                         const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     title: Row(
                       children: [
+                        // duration badge (primary-tinted)
                         Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 10, vertical: 6),
                           decoration: BoxDecoration(
-                            color: Colors.black.withOpacity(.05),
+                            color: cs.primary.withOpacity(isDark ? .22 : .12),
                             borderRadius: BorderRadius.circular(10),
+                            border:
+                                Border.all(color: cs.primary.withOpacity(.35)),
                           ),
-                          child: Text(_fmtDur(r.totalSeconds),
-                              style:
-                                  const TextStyle(fontWeight: FontWeight.w800)),
+                          child: Text(
+                            _fmtDur(r.totalSeconds),
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w800,
+                              color: onSurface,
+                            ),
+                          ),
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          '• ${getTranslated(context, 'ETA')} ${TimeOfDay.fromDateTime(eta).format(context)}',
-                          style: const TextStyle(color: Colors.black54),
+                          '• ${getTranslated(context, 'ETA')} '
+                          '${TimeOfDay.fromDateTime(eta).format(context)}',
+                          style: theme.textTheme.bodyMedium
+                              ?.copyWith(color: onSurfaceSubtle),
                         ),
                       ],
                     ),
@@ -161,39 +193,56 @@ class RouteOptionsSheet extends StatelessWidget {
                         runSpacing: 6,
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
+                          // walk chip
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(
-                              color: Colors.black.withOpacity(.06),
+                              color: cs.surfaceVariant,
                               borderRadius: BorderRadius.circular(12),
+                              border: Border.all(color: outline),
                             ),
-                            child: Row(children: [
-                              const Icon(Icons.directions_walk, size: 16),
-                              const SizedBox(width: 4),
-                              Text(
-                                '${r.walkMeters.toStringAsFixed(0)} ${getTranslated(context, 'm')} ${getTranslated(context, 'walk')}',
-                              ),
-                            ]),
+                            child: Row(
+                              children: [
+                                Icon(Icons.directions_walk,
+                                    size: 16, color: onSurface),
+                                const SizedBox(width: 4),
+                                Text(
+                                  '${r.walkMeters.toStringAsFixed(0)} '
+                                  '${getTranslated(context, 'm')} '
+                                  '${getTranslated(context, 'walk')}',
+                                  style: theme.textTheme.bodySmall
+                                      ?.copyWith(color: onSurface),
+                                ),
+                              ],
+                            ),
                           ),
+                          // line chips
                           ...r.lineSequence.map((k) => _lineChip(context, k)),
+                          // transfers chip (only when > 0)
                           if (r.transfers > 0)
                             Container(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 8, vertical: 4),
                               decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(.06),
+                                color: cs.surfaceVariant,
                                 borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: outline),
                               ),
-                              child: Row(children: [
-                                const Icon(Icons.swap_horiz_rounded, size: 16),
-                                const SizedBox(width: 4),
-                                Text(
-                                  r.transfers == 1
-                                      ? '1 ${getTranslated(context, 'transfer')}'
-                                      : '${r.transfers} ${getTranslated(context, 'transfers')}',
-                                ),
-                              ]),
+                              child: Row(
+                                children: [
+                                  Icon(Icons.swap_horiz_rounded,
+                                      size: 16, color: onSurface),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    r.transfers == 1
+                                        ? '1 ${getTranslated(context, 'transfer')}'
+                                        : '${r.transfers} ${getTranslated(context, 'transfers')}',
+                                    style: theme.textTheme.bodySmall
+                                        ?.copyWith(color: onSurface),
+                                  ),
+                                ],
+                              ),
                             ),
                         ],
                       ),

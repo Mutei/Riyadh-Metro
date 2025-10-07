@@ -1,4 +1,5 @@
-// lib/main.dart
+import 'dart:async';
+
 import 'package:darb/screens/login_screen.dart';
 import 'package:darb/screens/main_screen.dart';
 import 'package:darb/screens/sign_up_screen.dart';
@@ -9,15 +10,19 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart'; // Realtime DB
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:shared_preferences/shared_preferences.dart'; // persist
 
 import 'localization/demo_localization.dart';
 import 'localization/language_constants.dart';
-import 'screens/welcome_screen.dart'; // keep if you use it elsewhere
+import 'screens/welcome_screen.dart';
 import 'constants/colors.dart';
+
+/// App-level theme choices, including the new "smart" mode.
+enum AppThemeMode { light, dark, system, smart }
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Firebase.initializeApp(); // Firebase Init
+  await Firebase.initializeApp();
 
   await FirebaseMessaging.instance.setForegroundNotificationPresentationOptions(
     alert: true,
@@ -25,9 +30,8 @@ Future<void> main() async {
     sound: true,
   );
 
-  final startLocale = await getLocale(); // load saved locale before runApp
+  final startLocale = await getLocale();
 
-  // Persisted session check (user stays signed in after restart)
   final user = FirebaseAuth.instance.currentUser;
   final startOnMain = user != null;
 
@@ -44,10 +48,40 @@ class MyApp extends StatefulWidget {
     required this.startOnMain,
   });
 
-  /// Call this from anywhere (e.g., your Language screen) to update the UI language instantly.
+  /// Update UI language instantly.
   static void setLocale(BuildContext context, Locale newLocale) {
     final _MyAppState? state = context.findAncestorStateOfType<_MyAppState>();
     state?.setLocale(newLocale);
+  }
+
+  /// Backward-compatible setter for the classic 3 ThemeMode values.
+  static void setThemeMode(BuildContext context, ThemeMode mode) {
+    final _MyAppState? state = context.findAncestorStateOfType<_MyAppState>();
+    if (state == null) return;
+    switch (mode) {
+      case ThemeMode.light:
+        state.setAppThemeMode(AppThemeMode.light);
+        break;
+      case ThemeMode.dark:
+        state.setAppThemeMode(AppThemeMode.dark);
+        break;
+      case ThemeMode.system:
+        state.setAppThemeMode(AppThemeMode.system);
+        break;
+    }
+  }
+
+  /// New: set the 4-option app theme mode (includes SMART).
+  static void setAppThemeMode(BuildContext context, AppThemeMode mode) {
+    final _MyAppState? state = context.findAncestorStateOfType<_MyAppState>();
+    state?.setAppThemeMode(mode);
+  }
+
+  /// New: let any screen tell the app we’re “underground / in a tunnel”.
+  /// While in SMART mode, this forces dark theme to reduce glare.
+  static void setUnderground(BuildContext context, bool value) {
+    final _MyAppState? state = context.findAncestorStateOfType<_MyAppState>();
+    state?._setUnderground(value);
   }
 
   @override
@@ -57,18 +91,77 @@ class MyApp extends StatefulWidget {
 class _MyAppState extends State<MyApp> {
   late Locale _locale;
 
+  // ------------------ THEME STATE ------------------
+  static const _kThemeModeKey = 'theme_mode'; // 'light'|'dark'|'system'|'smart'
+  AppThemeMode _appThemeMode = AppThemeMode.system;
+
+  // For SMART mode we compute an effective ThemeMode to pass to MaterialApp
+  ThemeMode _smartEffective = ThemeMode.light;
+  Timer? _smartTimer;
+  bool _underground = false; // externally toggled while in tunnels/metro, etc.
+
+  // Persist
+  Future<void> _loadThemeMode() async {
+    final prefs = await SharedPreferences.getInstance();
+    final s = prefs.getString(_kThemeModeKey) ?? 'system';
+    setState(() {
+      _appThemeMode = _decodeAppThemeMode(s);
+    });
+    // ensure smart calculation starts if needed
+    _startOrStopSmartTimer();
+    _recomputeSmartEffective(); // compute once initially
+  }
+
+  Future<void> _saveThemeMode(AppThemeMode mode) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_kThemeModeKey, _encodeAppThemeMode(mode));
+  }
+
+  static String _encodeAppThemeMode(AppThemeMode m) {
+    switch (m) {
+      case AppThemeMode.light:
+        return 'light';
+      case AppThemeMode.dark:
+        return 'dark';
+      case AppThemeMode.system:
+        return 'system';
+      case AppThemeMode.smart:
+        return 'smart';
+    }
+  }
+
+  static AppThemeMode _decodeAppThemeMode(String s) {
+    switch (s) {
+      case 'light':
+        return AppThemeMode.light;
+      case 'dark':
+        return AppThemeMode.dark;
+      case 'smart':
+        return AppThemeMode.smart;
+      case 'system':
+      default:
+        return AppThemeMode.system;
+    }
+  }
+  // -------------------------------------------------
+
   @override
   void initState() {
     super.initState();
     _locale = widget.startLocale;
     _initPushNotifications();
+    _loadThemeMode();
+  }
+
+  @override
+  void dispose() {
+    _smartTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _initPushNotifications() async {
     try {
       final messaging = FirebaseMessaging.instance;
-
-      // Request permission (iOS/macOS + Android 13+)
       final settings = await messaging.requestPermission(
         alert: true,
         badge: true,
@@ -79,17 +172,11 @@ class _MyAppState extends State<MyApp> {
         provisional: false,
       );
       debugPrint('Notification authorization: ${settings.authorizationStatus}');
-
-      // Ensure banner while in foreground (Apple)
       await messaging.setForegroundNotificationPresentationOptions(
         alert: true,
         badge: true,
         sound: true,
       );
-
-      // Save current token
-
-      // Optional: foreground messages
       FirebaseMessaging.onMessage.listen((RemoteMessage m) {
         debugPrint(
             'Foreground message: ${m.notification?.title} | ${m.notification?.body}');
@@ -100,10 +187,55 @@ class _MyAppState extends State<MyApp> {
   }
 
   void setLocale(Locale newLocale) {
-    if (_locale == newLocale) return; // avoid redundant rebuilds
-    setState(() {
-      _locale = newLocale;
-    });
+    if (_locale == newLocale) return;
+    setState(() => _locale = newLocale);
+  }
+
+  void setAppThemeMode(AppThemeMode mode) {
+    if (_appThemeMode == mode) return;
+    setState(() => _appThemeMode = mode);
+    _saveThemeMode(mode);
+    _startOrStopSmartTimer();
+    _recomputeSmartEffective();
+  }
+
+  void _setUnderground(bool v) {
+    if (_underground == v) return;
+    _underground = v;
+    if (_appThemeMode == AppThemeMode.smart) {
+      _recomputeSmartEffective();
+    }
+  }
+
+  void _startOrStopSmartTimer() {
+    _smartTimer?.cancel();
+    if (_appThemeMode == AppThemeMode.smart) {
+      // check often enough to feel responsive; light-weight computation
+      _smartTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+        _recomputeSmartEffective();
+      });
+    }
+  }
+
+  /// Simple heuristic:
+  /// - If "underground" is true → force dark
+  /// - Else light between 06:00–18:00, dark otherwise
+  void _recomputeSmartEffective() {
+    ThemeMode newMode;
+    if (_underground) {
+      newMode = ThemeMode.dark;
+    } else {
+      final hour = DateTime.now().hour;
+      newMode = (hour >= 6 && hour < 18) ? ThemeMode.light : ThemeMode.dark;
+    }
+    if (newMode != _smartEffective) {
+      setState(() => _smartEffective = newMode);
+    } else {
+      // still request a rebuild if appThemeMode==smart and we just switched to it
+      if (_appThemeMode == AppThemeMode.smart) {
+        setState(() {});
+      }
+    }
   }
 
   // ---- Helpers to get a friendly first name ----
@@ -118,7 +250,6 @@ class _MyAppState extends State<MyApp> {
   }
 
   /// Attempts to read: App/User/<uid>/FirstName from Realtime Database.
-  /// Falls back to displayName/email if not found.
   Future<String> _getFirstName(User? user) async {
     if (user == null) return 'Friend';
     try {
@@ -128,17 +259,19 @@ class _MyAppState extends State<MyApp> {
         final value = snap.value.toString().trim();
         if (value.isNotEmpty) return value;
       }
-    } catch (_) {
-      // Ignore and fall back gracefully
-    }
+    } catch (_) {}
     return _fallbackFirstName(user);
   }
 
   @override
   Widget build(BuildContext context) {
-    final theme = ThemeData(
+    // LIGHT THEME
+    final lightTheme = ThemeData(
       scaffoldBackgroundColor: AppColors.kBackGroundColor,
-      colorScheme: ColorScheme.fromSeed(seedColor: AppColors.kPrimaryColor),
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: AppColors.kPrimaryColor,
+        brightness: Brightness.light,
+      ),
       useMaterial3: true,
       textTheme: GoogleFonts.interTextTheme(),
       inputDecorationTheme: const InputDecorationTheme(
@@ -157,14 +290,56 @@ class _MyAppState extends State<MyApp> {
       ),
     );
 
+    // DARK THEME
+    final darkTheme = ThemeData(
+      scaffoldBackgroundColor: AppColors.kDarkBackgroundColor,
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: AppColors.kPrimaryColor,
+        brightness: Brightness.dark,
+      ),
+      useMaterial3: true,
+      textTheme: GoogleFonts.interTextTheme(
+        ThemeData(brightness: Brightness.dark).textTheme,
+      ),
+      inputDecorationTheme: const InputDecorationTheme(
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.all(Radius.circular(14)),
+        ),
+        contentPadding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          minimumSize: const Size.fromHeight(52),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
+      ),
+    );
+
+    // Effective mode for MaterialApp (smart collapses to a real ThemeMode).
+    final effectiveMode = () {
+      switch (_appThemeMode) {
+        case AppThemeMode.light:
+          return ThemeMode.light;
+        case AppThemeMode.dark:
+          return ThemeMode.dark;
+        case AppThemeMode.system:
+          return ThemeMode.system;
+        case AppThemeMode.smart:
+          return _smartEffective;
+      }
+    }();
+
     return MaterialApp(
       debugShowCheckedModeBanner: false,
       title: 'Darb Demo',
-      theme: theme,
+      theme: lightTheme,
+      darkTheme: darkTheme,
+      themeMode: effectiveMode,
 
-      // 👇 Runtime language switch: this is updated by MyApp.setLocale(context, newLocale)
+      // Language
       locale: _locale,
-
       supportedLocales: const [
         Locale('en', 'US'),
         Locale('ar', 'SA'),
@@ -176,32 +351,24 @@ class _MyAppState extends State<MyApp> {
         GlobalCupertinoLocalizations.delegate,
       ],
 
-      // No need for localeResolutionCallback since we explicitly control `locale`.
-      // Flutter will rebuild and reload strings whenever `_locale` changes.
-
-      // Decide first screen based on whether a user session exists
+      // First screen based on session
       initialRoute: widget.startOnMain ? '/mainScreen' : '/login',
 
       routes: {
         '/login': (_) => const LoginScreen(),
         '/register': (_) => const SignUpScreen(),
-
-        // ---- Build MainScreen with first name fetched from DB ----
         '/mainScreen': (_) {
           final user = FirebaseAuth.instance.currentUser;
           final emailVerified = user?.emailVerified ?? false;
 
-          // Use FutureBuilder to fetch first name from Realtime DB
           return FutureBuilder<String>(
             future: _getFirstName(user),
             builder: (context, snapshot) {
-              final firstName =
-                  snapshot.data ?? _fallbackFirstName(user); // safe fallback
+              final firstName = snapshot.data ?? _fallbackFirstName(user);
 
-              // While loading, you can show a lightweight splash
               if (snapshot.connectionState == ConnectionState.waiting) {
                 return Scaffold(
-                  backgroundColor: AppColors.kBackGroundColor,
+                  backgroundColor: Theme.of(context).scaffoldBackgroundColor,
                   body: const Center(child: CircularProgressIndicator()),
                 );
               }

@@ -1,42 +1,53 @@
 import 'package:flutter/material.dart';
-import 'leading_circle_icon.dart';
 
 class DrawerTile extends StatelessWidget {
   final IconData icon;
   final String title;
   final String? subtitle;
-  final VoidCallback? onTap;
-  final Color? foreground;
   final Widget? trailing;
+  final VoidCallback? onTap;
+
+  /// Optional override (e.g. red logout text)
+  final Color? foreground;
 
   const DrawerTile({
     super.key,
     required this.icon,
     required this.title,
     this.subtitle,
+    this.trailing,
     this.onTap,
     this.foreground,
-    this.trailing,
   });
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
+    final titleColor = foreground ?? cs.onSurface;
+    final subtitleColor =
+        subtitle != null ? cs.onSurface.withOpacity(0.65) : null;
+
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 4),
-      onTap: onTap,
-      leading: LeadingCircleIcon(icon: icon, foreground: foreground),
+      leading: Icon(icon, color: titleColor),
       title: Text(
         title,
         style: TextStyle(
           fontWeight: FontWeight.w600,
-          color: foreground ?? Colors.black,
+          color: titleColor,
         ),
       ),
-      subtitle: (subtitle == null)
-          ? null
-          : Text(subtitle!, style: const TextStyle(color: Colors.black54)),
-      trailing: trailing ??
-          const Icon(Icons.chevron_right_rounded, color: Colors.black38),
+      subtitle: subtitle != null
+          ? Text(
+              subtitle!,
+              style: TextStyle(color: subtitleColor),
+            )
+          : null,
+      trailing: trailing,
+      onTap: onTap,
+      visualDensity: VisualDensity.compact,
     );
   }
 }

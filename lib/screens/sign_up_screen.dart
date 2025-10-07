@@ -61,6 +61,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
       firstDate: firstDate,
       lastDate: lastDate,
       builder: (context, child) {
+        // Keep dialog rounded; colors will follow theme (light/dark)
         return Theme(
           data: Theme.of(context).copyWith(
             dialogTheme: const DialogTheme(
@@ -123,7 +124,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content: Text('${getTranslated(context, 'signup.failed')}: $e')),
+            content: Text('${getTranslated(context, 'signup.failed')}: $e'),
+          ),
         );
       }
     } finally {
@@ -151,8 +153,22 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final labelStyle = TextStyle(
+      fontSize: 14,
+      fontWeight: FontWeight.w600,
+      color: theme.textTheme.bodyLarge?.color,
+    );
+    final titleStyle = TextStyle(
+      fontSize: 28,
+      fontWeight: FontWeight.w700,
+      color: theme.textTheme.headlineSmall?.color,
+    );
+    final subtleColor = theme.textTheme.bodyMedium?.color?.withOpacity(0.65);
+
     return Scaffold(
-      backgroundColor: AppColors.kBackGroundColor,
+      // ⬇️ Use theme background for light/dark
+      backgroundColor: theme.scaffoldBackgroundColor,
       body: SafeArea(
         child: LayoutBuilder(
           builder: (context, constraints) {
@@ -185,15 +201,13 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         const SizedBox(height: 20),
                         Text(
                           getTranslated(context, 'signup.title'),
-                          style: const TextStyle(
-                              fontSize: 28, fontWeight: FontWeight.w700),
+                          style: titleStyle,
                         ),
                         const SizedBox(height: 20),
 
                         // First Name
                         Text(getTranslated(context, 'signup.firstName.label'),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                            style: labelStyle),
                         const SizedBox(height: 8),
                         TextFormField(
                           controller: _firstNameCtrl,
@@ -207,8 +221,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                         // Last Name
                         Text(getTranslated(context, 'signup.lastName.label'),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                            style: labelStyle),
                         const SizedBox(height: 8),
                         TextFormField(
                           controller: _lastNameCtrl,
@@ -222,8 +235,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                         // Phone
                         Text(getTranslated(context, 'signup.phone.label'),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                            style: labelStyle),
                         const SizedBox(height: 8),
                         TextFormField(
                           controller: _phoneCtrl,
@@ -246,8 +258,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                         // Username
                         Text(getTranslated(context, 'signup.username.label'),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                            style: labelStyle),
                         const SizedBox(height: 8),
                         TextFormField(
                           controller: _usernameCtrl,
@@ -269,8 +280,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                         // Email (for verification)
                         Text(getTranslated(context, 'signup.email.label'),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                            style: labelStyle),
                         const SizedBox(height: 8),
                         TextFormField(
                           controller: _emailCtrl,
@@ -294,21 +304,22 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                         // Gender (optional)
                         Text(getTranslated(context, 'signup.gender.label'),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                            style: labelStyle),
                         const SizedBox(height: 8),
                         DropdownButtonFormField<String>(
                           value: _gender,
                           decoration: _dec(context, 'signup.gender.hint'),
                           items: [
                             DropdownMenuItem(
-                                value: "Male",
-                                child: Text(getTranslated(
-                                    context, 'signup.gender.male'))),
+                              value: "Male",
+                              child: Text(
+                                  getTranslated(context, 'signup.gender.male')),
+                            ),
                             DropdownMenuItem(
-                                value: "Female",
-                                child: Text(getTranslated(
-                                    context, 'signup.gender.female'))),
+                              value: "Female",
+                              child: Text(getTranslated(
+                                  context, 'signup.gender.female')),
+                            ),
                           ],
                           onChanged: (v) => setState(() => _gender = v),
                         ),
@@ -316,8 +327,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                         // DOB (optional)
                         Text(getTranslated(context, 'signup.dob.label'),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                            style: labelStyle),
                         const SizedBox(height: 8),
                         InkWell(
                           onTap: _pickDob,
@@ -334,9 +344,11 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                           context, 'signup.dob.hint')
                                       : "${_dob!.year}-${_two(_dob!.month)}-${_two(_dob!.day)}",
                                   style: TextStyle(
-                                    color: _dob == null
-                                        ? Colors.black45
-                                        : Colors.black87,
+                                    color: (_dob == null
+                                            ? subtleColor
+                                            : theme
+                                                .textTheme.bodyMedium?.color) ??
+                                        Colors.grey,
                                   ),
                                 ),
                                 const Icon(Icons.calendar_today_outlined),
@@ -348,8 +360,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                         // Password
                         Text(getTranslated(context, 'signup.password.label'),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w600)),
+                            style: labelStyle),
                         const SizedBox(height: 8),
                         TextFormField(
                           controller: _passwordCtrl,
@@ -405,7 +416,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
                             Expanded(
                               child: Text(
                                 getTranslated(context, 'signup.terms'),
-                                style: const TextStyle(fontSize: 13.5),
+                                style: TextStyle(
+                                  fontSize: 13.5,
+                                  color: theme.textTheme.bodyMedium?.color,
+                                ),
                               ),
                             ),
                           ],
@@ -418,8 +432,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                           style: FilledButton.styleFrom(
                             minimumSize: const Size.fromHeight(56),
                             backgroundColor: AppColors.kPrimaryColor,
-                            disabledBackgroundColor:
-                                Colors.black.withOpacity(0.08),
+                            // Let Material handle disabled states (no forced disabled color)
                             shape: RoundedRectangleBorder(
                               borderRadius: BorderRadius.circular(24),
                             ),

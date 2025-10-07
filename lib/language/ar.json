@@ -285,7 +285,7 @@
   "Failed to save": "فشل الحفظ",
   "Start trip": "ابدأ الرحلة",
   "End trip": "إنهاء الرحلة",
-  "You have arrived.": "لقد وصلت.",
+  "You have arrived.": "لقد وصلت إلى إتجاهك. شكرا لإستخدامكم لشبكة النقل العام",
   "Pick a destination first.": "اختر وجهة أولاً.",
   "Delete favorite": "حذف المفضلة",
   "Are you sure you want to delete this favorite?": "هل أنت متأكد أنك تريد حذف هذا المكان المفضل؟",
@@ -424,7 +424,16 @@
   "Lines used": "الخطوط المستخدمة",
   "From station": "من المحطة",
   "To station": "إلى المحطة",
-  "Get ready to change lines at": "استعد لتبديل الخط عند"
-
+  "Get ready to change lines at": "استعد لتبديل الخط عند",
+  "drawer.themeSettings": "إعدادات المظهر",
+  "drawer.themeSubtitle": "فاتح، داكن، أو حسب النظام",
+  "theme.light": "فاتح",
+  "theme.dark": "داكن",
+  "theme.system": "حسب النظام",
+  "OK": "حسنًا",
+  "theme.smart": "تلقائي (حسب البيئة)",
+  "theme.smart.subtitle": "نهار = فاتح، ليل/نفق = داكن",
+  "theme.ambient": "تلقائي (الإضاءة)",
+  "theme.ambient.subtitle": "وضع فاتح في الأماكن المضيئة، وداكن في الإضاءة المنخفضة (مثل الأنفاق)."
 
 }

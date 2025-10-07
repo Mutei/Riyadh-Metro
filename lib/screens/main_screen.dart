@@ -113,6 +113,38 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       {}; // track which "transfer at next" prompts we already showed
 // NEW: de-dupe for “prepare to transfer”
   final Set<String> _transferPrepareShown = {};
+  // Put near your other fields
+  static const String _darkMapStyleJson = r'''
+[
+  {"elementType":"geometry","stylers":[{"color":"#1e1f24"}]},
+  {"elementType":"labels.icon","stylers":[{"visibility":"off"}]},
+  {"elementType":"labels.text.fill","stylers":[{"color":"#e0e0e0"}]},
+  {"elementType":"labels.text.stroke","stylers":[{"color":"#1e1f24"}]},
+  {"featureType":"administrative","elementType":"geometry","stylers":[{"visibility":"off"}]},
+  {"featureType":"poi","elementType":"geometry","stylers":[{"color":"#24252a"}]},
+  {"featureType":"poi","elementType":"labels.text.fill","stylers":[{"color":"#cfcfcf"}]},
+  {"featureType":"road","elementType":"geometry","stylers":[{"color":"#2a2b31"}]},
+  {"featureType":"road","elementType":"geometry.stroke","stylers":[{"color":"#1A1B20"}]},
+  {"featureType":"road","elementType":"labels.text.fill","stylers":[{"color":"#d0d0d0"}]},
+  {"featureType":"transit","elementType":"geometry","stylers":[{"color":"#2a2b31"}]},
+  {"featureType":"transit.station","elementType":"labels.text.fill","stylers":[{"color":"#d0d0d0"}]},
+  {"featureType":"water","elementType":"geometry","stylers":[{"color":"#0e1013"}]},
+  {"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#b0b0b0"}]}
+]
+''';
+
+// Helper to apply style based on current theme
+  Future<void> _applyMapStyleForTheme() async {
+    try {
+      final isDark = Theme.of(context).brightness == Brightness.dark;
+      final controller = await _mapController.future;
+      await controller
+          .setMapStyle(isDark ? _darkMapStyleJson : null); // null = default
+    } catch (_) {
+      // controller not ready => ignore safely
+    }
+  }
+
 // NEW: UI fields for “prepare to transfer soon”
   bool _transferSoon = false;
   int _transferSoonStopsAway = 0;
@@ -3054,6 +3086,91 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  // Put this inside your MainScreen State class
+  bool _arrivalDialogOpen = false;
+
+  Future<void> _handleArrival() async {
+    final msg = getTranslated(context, 'You have arrived.');
+
+    // Only show a modal if app is foregrounded
+    if (_isInForeground && mounted) {
+      await _showArrivalDialog(msg);
+    }
+
+    // Still fire the local push (keeps the original behavior)
+    AppLocalNotifications.show(body: msg);
+
+    // End trip after user acknowledges (or immediately if app is backgrounded)
+    _endTrip();
+  }
+
+  Future<void> _showArrivalDialog(String message) async {
+    if (_arrivalDialogOpen || !mounted) return;
+    _arrivalDialogOpen = true;
+
+    try {
+      final theme = Theme.of(context);
+      final cs = theme.colorScheme;
+
+      await showDialog<void>(
+        context: context,
+        barrierDismissible: false, // make it intentional
+        builder: (_) => AlertDialog(
+          backgroundColor: theme.dialogBackgroundColor,
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          contentPadding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+          title: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: cs.primary.withOpacity(0.12),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(Icons.check_circle_rounded, color: cs.primary),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(
+                  getTranslated(context, 'You have arrived.'),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: cs.onSurface,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            message,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: cs.onSurface.withOpacity(0.75),
+            ),
+          ),
+          actionsPadding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: Text(
+                getTranslated(context, 'OK'),
+                style: TextStyle(
+                  color: cs.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    } finally {
+      _arrivalDialogOpen = false;
+    }
+  }
+
   List<LatLng> _slicePolylineByStations(
       String lineKey, int fromIndex, int toIndex) {
     final pts = metroPolys.metroLineCoords[lineKey];
@@ -3338,54 +3455,74 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       ),
       body: Stack(children: [
         Positioned.fill(
-          child: GoogleMap(
-            initialCameraPosition: _camera,
-            polylines: _currentPolylines(),
-            circles: _metroStationCircles(),
-            markers: {
-              if (_userArrowMarker != null)
-                _userArrowMarker!, // <— heading arrow
-              ..._stationMarkersForMap(),
-              if (_destMarker != null) _destMarker!,
-            },
-            onCameraMove: (pos) {
-              // Only break follow when user changes ZOOM (pinch/double-tap)
-              final zoomChanged = (pos.zoom - _camera.zoom).abs() > 0.01;
-              if (zoomChanged && _navigating && !_camBusy && _followEnabled) {
-                setState(() => _followEnabled = false);
-              }
+          child: Builder(
+            builder: (context) {
+              // Re-apply style after a theme flip (e.g., user picks Dark/Light/System)
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                _applyMapStyleForTheme();
+              });
 
-              _lastCameraTarget = pos.target;
-              _camera =
-                  pos; // keep latest zoom/bearing/tilt for next comparisons
-            },
-            onCameraMoveStarted: () {
-              // Do nothing here; panning/tilting/rotating won't break follow
-            },
+              return GoogleMap(
+                initialCameraPosition: _camera,
+                polylines: _currentPolylines(),
+                circles: _metroStationCircles(),
+                markers: {
+                  if (_userArrowMarker != null)
+                    _userArrowMarker!, // heading arrow
+                  ..._stationMarkersForMap(),
+                  if (_destMarker != null) _destMarker!,
+                },
+                onCameraMove: (pos) {
+                  // Only break follow when user changes ZOOM (pinch/double-tap)
+                  final zoomChanged = (pos.zoom - _camera.zoom).abs() > 0.01;
+                  if (zoomChanged &&
+                      _navigating &&
+                      !_camBusy &&
+                      _followEnabled) {
+                    setState(() => _followEnabled = false);
+                  }
 
-            onMapCreated: (c) async {
-              _mapController.complete(c);
-              if (_locationGranted && !_initialCentered) {
-                try {
-                  final pos = await Geolocator.getCurrentPosition(
-                      desiredAccuracy: LocationAccuracy.high);
-                  _lastKnownPosition = pos;
-                  await c.animateCamera(CameraUpdate.newCameraPosition(
-                    CameraPosition(
-                        target: LatLng(pos.latitude, pos.longitude),
-                        zoom: 15.0),
-                  ));
-                  setState(() => _initialCentered = true);
-                } catch (_) {}
-              }
+                  _lastCameraTarget = pos.target;
+                  _camera =
+                      pos; // keep latest zoom/bearing/tilt for next comparisons
+                },
+                onCameraMoveStarted: () {
+                  // Panning/tilting/rotating won't break follow
+                },
+                onMapCreated: (c) async {
+                  _mapController.complete(c);
+
+                  // Apply style immediately for current theme
+                  await _applyMapStyleForTheme();
+
+                  // Center on first launch if permitted
+                  if (_locationGranted && !_initialCentered) {
+                    try {
+                      final pos = await Geolocator.getCurrentPosition(
+                        desiredAccuracy: LocationAccuracy.high,
+                      );
+                      _lastKnownPosition = pos;
+                      await c.animateCamera(
+                        CameraUpdate.newCameraPosition(
+                          CameraPosition(
+                            target: LatLng(pos.latitude, pos.longitude),
+                            zoom: 15.0,
+                          ),
+                        ),
+                      );
+                      if (mounted) setState(() => _initialCentered = true);
+                    } catch (_) {}
+                  }
+                },
+                myLocationEnabled:
+                    !_navigating, // hide default blue dot during nav
+                myLocationButtonEnabled: true,
+                compassEnabled: true,
+                zoomControlsEnabled: false,
+                buildingsEnabled: true,
+                trafficEnabled: _trafficEnabled,
+              );
             },
-            myLocationEnabled:
-                !_navigating, // <— hide default blue dot during nav
-            myLocationButtonEnabled: true,
-            compassEnabled: true,
-            zoomControlsEnabled: false,
-            buildingsEnabled: true,
-            trafficEnabled: _trafficEnabled,
           ),
         ),
 
@@ -3939,6 +4076,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           ),
         // ───────────────────────── bottom sheet (hidden while navigating) ─────────────────────────
         if (!_navigating)
+          // THEME-AWARE DraggableScrollableSheet
           DraggableScrollableSheet(
             key: const ValueKey('home_sheet'),
             controller: _homeSheetCtrl,
@@ -3947,37 +4085,64 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             maxChildSize: 0.92,
             snap: true,
             builder: (context, controller) {
+              final theme = Theme.of(context);
+              final cs = theme.colorScheme;
               final bottomInset = MediaQuery.of(context).viewInsets.bottom;
+
+              // tokens for consistent colors
+              final surface = cs.surface; // sheet bg
+              final onSurface = cs.onSurface; // main text
+              final onSurfaceSubtle =
+                  onSurface.withOpacity(0.65); // subtitles/hints
+              final outline = cs.outline; // hairlines/borders
+              final outlineVariant = cs.outlineVariant; // dividers
+              final pillColor = theme.brightness == Brightness.dark
+                  ? cs.onSurface.withOpacity(0.24)
+                  : Colors.black12;
+
               return AnimatedPadding(
                 duration: const Duration(milliseconds: 150),
                 curve: Curves.easeOut,
                 padding: EdgeInsets.only(bottom: bottomInset),
                 child: Container(
-                  decoration: const BoxDecoration(
-                    color: Color(0xFFF6F9F3),
+                  decoration: BoxDecoration(
+                    color: surface,
                     borderRadius:
-                        BorderRadius.vertical(top: Radius.circular(26)),
+                        const BorderRadius.vertical(top: Radius.circular(26)),
+                    // subtle border in dark to separate from map
+                    border: Border(
+                      top: BorderSide(
+                        color: theme.brightness == Brightness.dark
+                            ? cs.onSurface.withOpacity(0.06)
+                            : Colors.transparent,
+                        width: 1,
+                      ),
+                    ),
                   ),
                   child: ListView(
                     controller: controller,
                     padding: const EdgeInsets.symmetric(
                         horizontal: 20, vertical: 14),
                     children: [
+                      // grab handle
                       Center(
                         child: Container(
                           width: 40,
                           height: 4,
                           decoration: BoxDecoration(
-                            color: Colors.black12,
+                            color: pillColor,
                             borderRadius: BorderRadius.circular(100),
                           ),
                         ),
                       ),
                       const SizedBox(height: 14),
+
                       Text(
                         getTranslated(context, 'Where to?'),
-                        style: const TextStyle(
-                            fontSize: 24, fontWeight: FontWeight.w700),
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w700,
+                          color: onSurface,
+                        ),
                       ),
                       const SizedBox(height: 12),
 
@@ -3985,9 +4150,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                       SearchField(
                         hint: getTranslated(context, 'From (origin)'),
                         controller: _originCtrl,
-                        onSubmitted: (s) async {
-                          await _onOriginSubmitted(s);
-                        },
+                        onSubmitted: (s) async => _onOriginSubmitted(s),
                         onChanged: (q) {
                           _active = _ActiveField.origin;
                           _onQueryChanged(q);
@@ -4002,9 +4165,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                         hint:
                             getTranslated(context, 'Search station or address'),
                         controller: _destCtrl,
-                        onSubmitted: (s) async {
-                          await _onDestSubmitted(s);
-                        },
+                        onSubmitted: (s) async => _onDestSubmitted(s),
                         onChanged: (q) {
                           _active = _ActiveField.destination;
                           _onQueryChanged(q);
@@ -4022,14 +4183,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                             selected: _tripMode == _TripMode.metro,
                             onSelected: (_) => setState(() {
                               _tripMode = _TripMode.metro;
-                              _trafficEnabled =
-                                  false; // metro: no traffic layer
+                              _trafficEnabled = false;
                             }),
                             label: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.directions_subway_filled, size: 18),
-                                SizedBox(width: 6),
+                                const Icon(Icons.directions_subway_filled,
+                                    size: 18),
+                                const SizedBox(width: 6),
                                 Text(getTranslated(context, 'Metro')),
                               ],
                             ),
@@ -4039,7 +4200,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                             selected: _tripMode == _TripMode.drive,
                             onSelected: (_) => setState(() {
                               _tripMode = _TripMode.drive;
-                              // only enable traffic if a route/destination already exists
                               _trafficEnabled = (_userDestination != null) &&
                                   ((_driveAlternates?.isNotEmpty ?? false) ||
                                       _routePolylines.isNotEmpty);
@@ -4047,8 +4207,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                             label: Row(
                               mainAxisSize: MainAxisSize.min,
                               children: [
-                                Icon(Icons.directions_car_rounded, size: 18),
-                                SizedBox(width: 6),
+                                const Icon(Icons.directions_car_rounded,
+                                    size: 18),
+                                const SizedBox(width: 6),
                                 Text(getTranslated(context, 'Car')),
                               ],
                             ),
@@ -4069,7 +4230,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                               await showModalBottomSheet(
                                 context: context,
                                 isScrollControlled: false,
-                                backgroundColor: Colors.white,
+                                backgroundColor: surface,
                                 shape: const RoundedRectangleBorder(
                                   borderRadius: BorderRadius.vertical(
                                       top: Radius.circular(18)),
@@ -4094,7 +4255,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     );
                                     await _renderRouteOnMap(r);
                                     if (mounted) Navigator.of(context).pop();
-
                                     await _renderRouteOnMap(r);
                                     if (mounted) Navigator.of(context).pop();
                                     await _showTripPreviewForRoute(
@@ -4103,6 +4263,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                 ),
                               );
                             },
+                            style: OutlinedButton.styleFrom(
+                              foregroundColor: onSurface,
+                              side: BorderSide(color: outline),
+                              backgroundColor: surface,
+                            ),
                           ),
                         ),
 
@@ -4120,9 +4285,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                               _showDriveAlternativesSheet();
                             },
                             style: OutlinedButton.styleFrom(
-                              foregroundColor: Colors.black87,
-                              side: const BorderSide(color: Colors.black12),
-                              backgroundColor: Colors.white,
+                              foregroundColor: onSurface,
+                              side: BorderSide(color: outline),
+                              backgroundColor: surface,
                             ),
                           ),
                         ),
@@ -4132,17 +4297,24 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                           builder: (ctx, constraints) {
                             final double maxListHeight = math.min(
                                 320, MediaQuery.of(ctx).size.height * 0.45);
+                            final boxDecoration = BoxDecoration(
+                              color: surface,
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                  color: outline.withOpacity(0.6), width: .6),
+                              boxShadow: theme.brightness == Brightness.light
+                                  ? const [
+                                      BoxShadow(
+                                        blurRadius: 6,
+                                        color:
+                                            Color(0x1F000000), // soft elevation
+                                        offset: Offset(0, 2),
+                                      )
+                                    ]
+                                  : null,
+                            );
                             return Container(
-                              decoration: BoxDecoration(
-                                color: Colors.white,
-                                borderRadius: BorderRadius.circular(14),
-                                boxShadow: const [
-                                  BoxShadow(
-                                      blurRadius: 6,
-                                      color: Colors.black12,
-                                      offset: Offset(0, 2))
-                                ],
-                              ),
+                              decoration: boxDecoration,
                               child: ConstrainedBox(
                                 constraints:
                                     BoxConstraints(maxHeight: maxListHeight),
@@ -4150,22 +4322,32 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                   shrinkWrap: true,
                                   physics: const ClampingScrollPhysics(),
                                   itemCount: _suggestions.length,
-                                  separatorBuilder: (_, __) =>
-                                      const Divider(height: 1, thickness: .5),
+                                  separatorBuilder: (_, __) => Divider(
+                                    height: 1,
+                                    thickness: .5,
+                                    color: outlineVariant,
+                                  ),
                                   itemBuilder: (_, i) {
                                     final s = _suggestions[i];
                                     return ListTile(
                                       dense: true,
-                                      leading: Icon(s.icon),
+                                      leading: Icon(s.icon, color: onSurface),
                                       title: Text(
                                         s.title,
-                                        style: const TextStyle(
-                                            fontWeight: FontWeight.w600),
+                                        style:
+                                            theme.textTheme.bodyLarge?.copyWith(
+                                          fontWeight: FontWeight.w600,
+                                          color: onSurface,
+                                        ),
                                       ),
                                       subtitle: Text(
                                         s.subtitle,
                                         maxLines: 1,
                                         overflow: TextOverflow.ellipsis,
+                                        style:
+                                            theme.textTheme.bodySmall?.copyWith(
+                                          color: onSurfaceSubtle,
+                                        ),
                                       ),
                                       onTap: () async {
                                         if (s.kind == 'place') {
@@ -4193,9 +4375,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                           label:
                               Text(getTranslated(context, 'Discover places')),
                           style: OutlinedButton.styleFrom(
-                            foregroundColor: Colors.black87,
-                            side: const BorderSide(color: Colors.black12),
-                            backgroundColor: Colors.white,
+                            foregroundColor: onSurface,
+                            side: BorderSide(color: outline),
+                            backgroundColor: surface,
                           ),
                         ),
                       ),
@@ -4204,15 +4386,18 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
                       Row(
                         children: [
-                          const Icon(Icons.info_outline,
-                              size: 16, color: Colors.black54),
+                          Icon(Icons.info_outline,
+                              size: 16, color: onSurfaceSubtle),
                           const SizedBox(width: 6),
                           Expanded(
                             child: Text(
-                              getTranslated(context,
-                                  'Tip: set your origin using the map center (tap "Set origin here").'),
-                              style: const TextStyle(
-                                  fontSize: 12, color: Colors.black54),
+                              getTranslated(
+                                context,
+                                'Tip: set your origin using the map center (tap "Set origin here").',
+                              ),
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: onSurfaceSubtle,
+                              ),
                             ),
                           ),
                         ],

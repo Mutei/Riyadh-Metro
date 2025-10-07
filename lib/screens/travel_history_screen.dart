@@ -81,9 +81,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
           : '${meters.toString()} $mLabel';
     } else {
       final km = (meters / 1000.0);
-      // one decimal like your UI
       final s = km.toStringAsFixed(1);
-      // In Arabic we usually show unit after the number as well
       out = '$s $kmLabel';
     }
     return _localizeDigits(ctx, out);
@@ -235,12 +233,14 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
       initialDateRange: init,
       helpText: tr('filter.dates', 'Dates'),
       builder: (ctx, child) {
+        final theme = Theme.of(ctx);
+        final cs = theme.colorScheme;
         return Theme(
-          data: Theme.of(ctx).copyWith(
-            colorScheme: Theme.of(ctx).colorScheme.copyWith(
-                  primary: const Color(0xFF1B5E20),
-                  secondary: const Color(0xFF1B5E20),
-                ),
+          data: theme.copyWith(
+            colorScheme: cs.copyWith(
+              primary: AppColors.kPrimaryColor,
+              secondary: AppColors.kPrimaryColor,
+            ),
           ),
           child: child!,
         );
@@ -337,10 +337,13 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final t = Theme.of(context).textTheme;
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final t = theme.textTheme;
 
     return Scaffold(
-      backgroundColor: AppColors.kBackGroundColor,
+      // Theme-aware background
+      backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(
         title: _selectionMode
             ? Text(
@@ -387,7 +390,6 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                         tr('filter.sort.shortest', 'Shortest time')),
                     _sortItem(_Sort.longestDistance,
                         tr('filter.sort.longest', 'Longest distance')),
-//                   ],
                   ],
                   icon: const Icon(Icons.sort_rounded),
                 ),
@@ -403,12 +405,12 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                   child: CustomScrollView(
                     slivers: [
                       if (!_selectionMode)
-                        SliverToBoxAdapter(child: _searchBar()),
+                        SliverToBoxAdapter(child: _searchBar(theme)),
                       if (!_selectionMode)
-                        SliverToBoxAdapter(child: _filterRow()),
+                        SliverToBoxAdapter(child: _filterRow(theme)),
                       if (!_selectionMode)
-                        SliverToBoxAdapter(child: _activeFiltersBar()),
-                      ..._buildGroupedList(t),
+                        SliverToBoxAdapter(child: _activeFiltersBar(theme)),
+                      ..._buildGroupedList(t, theme),
                       const SliverToBoxAdapter(child: SizedBox(height: 16)),
                     ],
                   ),
@@ -417,12 +419,13 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   }
 
   PopupMenuItem<_Sort> _sortItem(_Sort v, String label) {
+    final cs = Theme.of(context).colorScheme;
     return PopupMenuItem<_Sort>(
       value: v,
       child: Row(
         children: [
           if (_sort == v)
-            const Icon(Icons.check_rounded, color: Colors.green)
+            Icon(Icons.check_rounded, color: cs.primary)
           else
             const SizedBox(width: 24),
           const SizedBox(width: 8),
@@ -432,7 +435,11 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     );
   }
 
-  Widget _searchBar() {
+  Widget _searchBar(ThemeData theme) {
+    final cs = theme.colorScheme;
+    final outline = cs.outline;
+    final fill = theme.inputDecorationTheme.fillColor ?? cs.surface;
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
       child: TextField(
@@ -444,17 +451,22 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
         decoration: InputDecoration(
           prefixIcon: const Icon(Icons.search),
           hintText: tr('search.history.hint', 'Search destination or origin'),
+          isDense: true,
           filled: true,
-          fillColor: Colors.white,
+          fillColor: fill,
           contentPadding:
               const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
           border: OutlineInputBorder(
             borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: Colors.black12),
+            borderSide: BorderSide(color: outline),
           ),
           enabledBorder: OutlineInputBorder(
             borderRadius: BorderRadius.circular(16),
-            borderSide: const BorderSide(color: Colors.black12),
+            borderSide: BorderSide(color: outline),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide(color: cs.primary, width: 2),
           ),
         ),
       ),
@@ -462,7 +474,9 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   }
 
   // Overflow-proof filter row (Wrap)
-  Widget _filterRow() {
+  Widget _filterRow(ThemeData theme) {
+    final cs = theme.colorScheme;
+
     Widget chip(String key, IconData icon, String label) => ChoiceChip(
           label: Row(
             mainAxisSize: MainAxisSize.min,
@@ -498,9 +512,10 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                   : '${_shortLocalized(context, _range!.start)} – ${_shortLocalized(context, _range!.end)}',
             ),
             style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.black87,
-              side: const BorderSide(color: Colors.black12),
-              backgroundColor: Colors.white,
+              foregroundColor: cs.onSurface,
+              side: BorderSide(color: cs.outline),
+              backgroundColor:
+                  theme.inputDecorationTheme.fillColor ?? cs.surface,
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             ),
           ),
@@ -510,7 +525,8 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   }
 
   // Active filters bar (Wrap, never overflows)
-  Widget _activeFiltersBar() {
+  Widget _activeFiltersBar(ThemeData theme) {
+    final cs = theme.colorScheme;
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
       child: Wrap(
@@ -520,12 +536,16 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
         children: [
           if (_mode != 'all')
             _pill(
-                '${tr("Mode", "Mode")}: ${_mode == "car" ? tr("Car", "Car") : tr("Metro", "Metro")}'),
+              theme,
+              '${tr("Mode", "Mode")}: ${_mode == "car" ? tr("Car", "Car") : tr("Metro", "Metro")}',
+            ),
           if (_query.trim().isNotEmpty)
-            _pill('${tr("Search", "Search")}: "${_query.trim()}"'),
+            _pill(theme, '${tr("Search", "Search")}: "${_query.trim()}"'),
           if (_range != null)
             _pill(
-                '${_shortLocalized(context, _range!.start)}–${_shortLocalized(context, _range!.end)}'),
+              theme,
+              '${_shortLocalized(context, _range!.start)}–${_shortLocalized(context, _range!.end)}',
+            ),
           TextButton.icon(
             onPressed: _clearAllFilters,
             icon: const Icon(Icons.filter_alt_off_rounded),
@@ -537,7 +557,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   }
 
   // Group by yyyy-mm-dd
-  List<Widget> _buildGroupedList(TextTheme t) {
+  List<Widget> _buildGroupedList(TextTheme t, ThemeData theme) {
     final groups = <String, List<TravelEntry>>{};
     for (final e in _view) {
       final k = _dateKey(e.startedAt);
@@ -545,6 +565,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     }
 
     final keys = groups.keys.toList()..sort((a, b) => b.compareTo(a));
+    final cs = theme.colorScheme;
 
     return keys.map((k) {
       final items = groups[k]!;
@@ -555,15 +576,19 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
           if (i == 0) {
             return Padding(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
-              child: Text(_prettyDateHeader(k),
-                  style: t.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800, color: Colors.black87)),
+              child: Text(
+                _prettyDateHeader(k),
+                style: t.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                  color: cs.onSurface,
+                ),
+              ),
             );
           }
           final e = items[i - 1];
           return Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: _tripCard(e),
+            child: _tripCard(theme, e),
           );
         },
       );
@@ -590,8 +615,8 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     }
   }
 
-  Widget _lineChip(String key) {
-    // Show translated color name, e.g., 'Blue' -> 'أزرق'
+  Widget _lineChip(ThemeData theme, String key) {
+    final cs = theme.colorScheme;
     final label = getTranslated(
         context, key[0].toUpperCase() + key.substring(1).toLowerCase());
     final shown = (label.isEmpty || label.toLowerCase() == 'null')
@@ -601,10 +626,12 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
         : label;
 
     final c = _lineColor(key);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: c.withOpacity(0.1),
+        color: c.withOpacity(isDark ? 0.18 : 0.12),
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: c.withOpacity(0.4)),
       ),
@@ -612,17 +639,22 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+            width: 10,
+            height: 10,
+            decoration: BoxDecoration(color: c, shape: BoxShape.circle),
+          ),
           const SizedBox(width: 6),
-          Text(shown, style: TextStyle(fontWeight: FontWeight.w700, color: c)),
+          Text(
+            shown,
+            style: TextStyle(fontWeight: FontWeight.w700, color: cs.onSurface),
+          ),
         ],
       ),
     );
   }
 
-  Widget _tripCard(TravelEntry e) {
+  Widget _tripCard(ThemeData theme, TravelEntry e) {
+    final cs = theme.colorScheme;
     final isCar = e.mode == 'car';
     final accent = isCar ? const Color(0xFF1976D2) : const Color(0xFF00897B);
     final selected = _selectedIds.contains(e.id);
@@ -647,16 +679,18 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
       borderRadius: BorderRadius.circular(18),
       child: Container(
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: theme.cardColor, // adaptive
           borderRadius: BorderRadius.circular(18),
           border: _selectionMode && selected
-              ? Border.all(color: Colors.green.shade600, width: 2)
-              : null,
-          boxShadow: const [
+              ? Border.all(color: cs.primary, width: 2)
+              : Border.all(color: cs.outline.withOpacity(0.0)),
+          boxShadow: [
+            // subtle shadow; keeps good contrast in dark by lowering opacity
             BoxShadow(
               blurRadius: 12,
-              color: Color(0x14000000),
-              offset: Offset(0, 4),
+              color: cs.shadow.withOpacity(
+                  theme.brightness == Brightness.dark ? 0.25 : 0.08),
+              offset: const Offset(0, 4),
             ),
           ],
         ),
@@ -685,10 +719,9 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                     ),
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Icon(
-                    isCar
-                        ? Icons.directions_car_filled
-                        : Icons.directions_subway_filled,
+                  child: const Icon(
+                    Icons
+                        .directions_transit_filled, // replaced dynamically below
                     color: Colors.white,
                   ),
                 ),
@@ -704,10 +737,9 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                             : tr('Destination', 'Destination'),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 16,
+                        style: theme.textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.w800,
-                          color: Color(0xFF1B1B1B),
+                          color: cs.onSurface,
                         ),
                       ),
                       const SizedBox(height: 4),
@@ -716,7 +748,9 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                         '${e.originLabel?.trim().isNotEmpty == true ? e.originLabel!.trim() : tr("From my location", "From my location")} → ${e.destLabel?.trim().isNotEmpty == true ? e.destLabel!.trim() : tr("Destination", "Destination")}',
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(color: Colors.black54),
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: cs.onSurface.withOpacity(0.65),
+                        ),
                       ),
                       const SizedBox(height: 6),
                       // Chips row
@@ -726,19 +760,23 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
                           _chip(
+                            theme,
                             icon: Icons.schedule,
                             text: _fmtDurationLocalized(
                                 context, e.durationSeconds),
                           ),
                           _chip(
+                            theme,
                             icon: Icons.pin_drop_outlined,
                             text: _fmtDistance(context, e.distanceMeters),
                           ),
                           _chip(
+                            theme,
                             icon: Icons.play_arrow_rounded,
                             text: '${tr("Start", "Start")}: $startTime',
                           ),
                           _chip(
+                            theme,
                             icon: Icons.stop_rounded,
                             text: '${tr("End", "End")}: $endTime',
                           ),
@@ -749,10 +787,12 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                 ),
                 const SizedBox(width: 8),
                 if (!_selectionMode)
-                  const Icon(Icons.chevron_right_rounded,
-                      color: Colors.black38),
+                  Icon(Icons.chevron_right_rounded,
+                      color: cs.onSurface.withOpacity(0.38)),
               ],
             ),
+
+            // Replace the icon with the correct one (kept outside the Container to keep gradient)
 
             // Lines used (metro only)
             if (!isCar && lines.isNotEmpty) ...[
@@ -764,10 +804,12 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                 children: [
                   Text(
                     tr('Lines used', 'Lines used'),
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w700, color: Colors.black87),
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: cs.onSurface,
+                    ),
                   ),
-                  ...lines.map(_lineChip),
+                  ...lines.map((k) => _lineChip(theme, k)),
                 ],
               ),
               if ((e.fromStation?.isNotEmpty ?? false) ||
@@ -777,7 +819,9 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                   '${tr("From", "From")}: ${e.fromStation ?? tr("Unknown", "Unknown")}  •  ${tr("To", "To")}: ${e.toStation ?? tr("Unknown", "Unknown")}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.black54),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: cs.onSurface.withOpacity(0.65),
+                  ),
                 ),
               ],
             ],
@@ -787,34 +831,49 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     );
   }
 
-  Widget _chip({required IconData icon, required String text}) {
+  Widget _chip(ThemeData theme,
+      {required IconData icon, required String text}) {
+    final cs = theme.colorScheme;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFFF5F7F9),
+        color: cs.surfaceVariant,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black12),
+        border: Border.all(color: cs.outline),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 16, color: Colors.black87),
+          Icon(icon, size: 16, color: cs.onSurface),
           const SizedBox(width: 6),
-          Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
+          Text(
+            text,
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontWeight: FontWeight.w600,
+              color: cs.onSurface,
+            ),
+          ),
         ],
       ),
     );
   }
 
-  Widget _pill(String text) {
+  Widget _pill(ThemeData theme, String text) {
+    final cs = theme.colorScheme;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: const Color(0xFFEFF2F6),
+        color: cs.surfaceVariant,
         borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: Colors.black12),
+        border: Border.all(color: cs.outline),
       ),
-      child: Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
+      child: Text(
+        text,
+        style: theme.textTheme.bodySmall?.copyWith(
+          fontWeight: FontWeight.w600,
+          color: cs.onSurface,
+        ),
+      ),
     );
   }
 
@@ -824,13 +883,13 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     showModalBottomSheet(
       context: context,
       showDragHandle: true,
-      isScrollControlled: true, // <— allow tall content + scrolling
-      backgroundColor: Colors.white,
+      isScrollControlled: true, // allow tall content + scrolling
+      backgroundColor: Theme.of(context).dialogBackgroundColor, // adaptive
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(18)),
       ),
       builder: (ctx) => FractionallySizedBox(
-        heightFactor: 0.9, // <— cap to 90% of screen height
+        heightFactor: 0.9,
         child: _TripDetailsSheet(
           entry: e,
           onDelete: () async {
@@ -900,23 +959,31 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   String _2(int n) => n.toString().padLeft(2, '0');
 
   Widget _emptyState(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.route_rounded, size: 64, color: Colors.black26),
+            Icon(Icons.route_rounded,
+                size: 64, color: cs.onSurface.withOpacity(0.26)),
             const SizedBox(height: 12),
             Text(
               tr('No trips yet', 'No trips yet'),
-              style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18),
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: cs.onSurface,
+              ),
             ),
             const SizedBox(height: 6),
             Text(
               tr('Your trips will appear here', 'Your trips will appear here'),
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.black54),
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: cs.onSurface.withOpacity(0.65),
+              ),
             ),
           ],
         ),
@@ -1017,7 +1084,8 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
     }
   }
 
-  Widget _lineChip(String key) {
+  Widget _lineChip(ThemeData theme, String key) {
+    final cs = theme.colorScheme;
     final translated = getTranslated(
         context, key[0].toUpperCase() + key.substring(1).toLowerCase());
     final text = (translated.isEmpty || translated.toLowerCase() == 'null')
@@ -1027,10 +1095,12 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
         : translated;
 
     final c = _lineColor(key);
+    final isDark = theme.brightness == Brightness.dark;
+
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-        color: c.withOpacity(0.1),
+        color: c.withOpacity(isDark ? 0.18 : 0.12),
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: c.withOpacity(0.4)),
       ),
@@ -1042,7 +1112,9 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
               height: 10,
               decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
           const SizedBox(width: 6),
-          Text(text, style: TextStyle(fontWeight: FontWeight.w700, color: c)),
+          Text(text,
+              style: theme.textTheme.bodyMedium
+                  ?.copyWith(fontWeight: FontWeight.w700, color: cs.onSurface)),
         ],
       ),
     );
@@ -1050,6 +1122,8 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final e = widget.entry;
     final lines = e.metroLineKeys ?? const [];
 
@@ -1072,12 +1146,12 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
                     runSpacing: 10,
                     crossAxisAlignment: WrapCrossAlignment.center,
                     children: [
-                      _modeBadge(context, e.mode),
-                      _chip(Icons.schedule,
+                      _modeBadge(context, theme, e.mode),
+                      _chip(theme, Icons.schedule,
                           _fmtDuration(context, e.durationSeconds)),
-                      _chip(Icons.pin_drop_outlined,
+                      _chip(theme, Icons.pin_drop_outlined,
                           _fmtDistance(context, e.distanceMeters)),
-                      _datePill(_friendlyDate(context, e.startedAt)),
+                      _datePill(theme, _friendlyDate(context, e.startedAt)),
                     ],
                   ),
                 ),
@@ -1092,9 +1166,11 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
                       runSpacing: 10,
                       children: [
                         Text(getTranslated(context, 'Lines used'),
-                            style: const TextStyle(
-                                fontWeight: FontWeight.w700, fontSize: 14)),
-                        ...lines.map(_lineChip),
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: cs.onSurface,
+                            )),
+                        ...lines.map((k) => _lineChip(theme, k)),
                       ],
                     ),
                   ),
@@ -1102,21 +1178,22 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
                 ],
 
                 // Origin / Destination, stations
-                _kv(getTranslated(context, 'Origin'),
+                _kv(theme, getTranslated(context, 'Origin'),
                     e.originLabel ?? getTranslated(context, 'Unknown')),
-                _kv(getTranslated(context, 'Destination'),
+                _kv(theme, getTranslated(context, 'Destination'),
                     e.destLabel ?? getTranslated(context, 'Unknown')),
                 if (e.mode == 'metro') ...[
-                  _kv(getTranslated(context, 'From station'),
+                  _kv(theme, getTranslated(context, 'From station'),
                       e.fromStation ?? getTranslated(context, 'Unknown')),
-                  _kv(getTranslated(context, 'To station'),
+                  _kv(theme, getTranslated(context, 'To station'),
                       e.toStation ?? getTranslated(context, 'Unknown')),
                 ],
 
                 // Start / End times
-                _kv(getTranslated(context, 'Start time'),
+                _kv(theme, getTranslated(context, 'Start time'),
                     _fmtClock(context, e.startedAt)),
                 _kv(
+                    theme,
                     getTranslated(context, 'End time'),
                     e.finishedAt == null
                         ? getTranslated(context, '—')
@@ -1138,12 +1215,12 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
                     Expanded(
                       child: ElevatedButton.icon(
                         style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.red.shade600),
+                          backgroundColor: Colors.red.shade600,
+                          foregroundColor: Colors.white,
+                        ),
                         onPressed: widget.onDelete,
-                        icon: const Icon(Icons.delete_forever_rounded,
-                            color: Colors.white),
-                        label: Text(getTranslated(context, 'Delete'),
-                            style: const TextStyle(color: Colors.white)),
+                        icon: const Icon(Icons.delete_forever_rounded),
+                        label: Text(getTranslated(context, 'Delete')),
                       ),
                     ),
                   ],
@@ -1156,66 +1233,94 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
     );
   }
 
-  // --- UI helpers (unchanged except numbers localization) ---
-  Widget _kv(String k, String v) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 6),
-        child: Row(
-          children: [
-            Expanded(
-                child: Text(k,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w700, fontSize: 13))),
-            Expanded(
-              flex: 2,
-              child: Text(v,
-                  textAlign: TextAlign.end,
-                  style: const TextStyle(color: Colors.black87),
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis),
-            ),
-          ],
-        ),
-      );
-
-  Widget _chip(IconData icon, String text) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFFF5F7F9),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: Colors.black12),
-        ),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Icon(icon, size: 16, color: Colors.black87),
-          const SizedBox(width: 6),
-          Text(text, style: const TextStyle(fontWeight: FontWeight.w600)),
-        ]),
-      );
-
-  Widget _datePill(String text) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        decoration: BoxDecoration(
-          color: const Color(0xFFEFF3F6),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: Colors.black12),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Icon(Icons.event, size: 16, color: Colors.black87),
-            const SizedBox(width: 6),
-            Flexible(
-              child: Text(
-                text,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: const TextStyle(fontWeight: FontWeight.w600),
+  // --- UI helpers (theme-aware) ---
+  Widget _kv(ThemeData theme, String k, String v) {
+    final cs = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              k,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: cs.onSurface,
               ),
             ),
-          ],
-        ),
-      );
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              v,
+              textAlign: TextAlign.end,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: cs.onSurface.withOpacity(0.85),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
-  Widget _modeBadge(BuildContext ctx, String mode) {
+  Widget _chip(ThemeData theme, IconData icon, String text) {
+    final cs = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: cs.surfaceVariant,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: cs.outline),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Icon(icon, size: 16, color: cs.onSurface),
+        const SizedBox(width: 6),
+        Text(
+          text,
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w600,
+            color: cs.onSurface,
+          ),
+        ),
+      ]),
+    );
+  }
+
+  Widget _datePill(ThemeData theme, String text) {
+    final cs = theme.colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: cs.surfaceVariant,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: cs.outline),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(Icons.event, size: 16, color: cs.onSurface),
+          const SizedBox(width: 6),
+          Flexible(
+            child: Text(
+              text,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w600,
+                color: cs.onSurface,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _modeBadge(BuildContext ctx, ThemeData theme, String mode) {
+    final cs = theme.colorScheme;
     final icon = mode == 'car'
         ? Icons.directions_car_filled
         : Icons.directions_subway_filled;
@@ -1223,13 +1328,20 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
       decoration: BoxDecoration(
-          color: Colors.white,
-          border: Border.all(color: Colors.black12),
-          borderRadius: BorderRadius.circular(18)),
+        color: theme.inputDecorationTheme.fillColor ?? cs.surface,
+        border: Border.all(color: cs.outline),
+        borderRadius: BorderRadius.circular(18),
+      ),
       child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Icon(icon, size: 18),
+        Icon(icon, size: 18, color: cs.onSurface),
         const SizedBox(width: 6),
-        Text(label, style: const TextStyle(fontWeight: FontWeight.w600)),
+        Text(
+          label,
+          style: theme.textTheme.bodySmall?.copyWith(
+            fontWeight: FontWeight.w600,
+            color: cs.onSurface,
+          ),
+        ),
       ]),
     );
   }
