@@ -434,5 +434,11 @@
       "theme.smart": "Auto (Environment)",
       "theme.smart.subtitle": "Daylight = Light, Night/Tunnel = Dark",
       "theme.ambient": "Auto (Ambient)",
-      "theme.ambient.subtitle": "Light mode in bright places; dark mode in low light (like tunnels)."
+      "theme.ambient.subtitle": "Light mode in bright places; dark mode in low light (like tunnels).",
+      "Head to": "Head to",
+      "Then board": "Then board",
+
+      "Board at": "Board at",
+      "Line": "Line"
+
   }

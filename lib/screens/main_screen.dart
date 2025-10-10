@@ -111,6 +111,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       false; // shown "walk to first" and/or reached first station
   final Set<String> _transferNextShown =
       {}; // track which "transfer at next" prompts we already showed
+  bool _firstMileToStation = false;
+  bool _firstMilePrompted = false;
+  String? _firstStationName;
+  String? _firstStationLineKey;
+
 // NEW: de-dupe for “prepare to transfer”
   final Set<String> _transferPrepareShown = {};
   // Put near your other fields
@@ -132,6 +137,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   {"featureType":"water","elementType":"labels.text.fill","stylers":[{"color":"#b0b0b0"}]}
 ]
 ''';
+  bool _enRouteToFirstStation =
+      false; // driving/walking to the first metro station
+  LatLng? _firstStationLL;
 
 // Helper to apply style based on current theme
   Future<void> _applyMapStyleForTheme() async {
@@ -142,6 +150,80 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           .setMapStyle(isDark ? _darkMapStyleJson : null); // null = default
     } catch (_) {
       // controller not ready => ignore safely
+    }
+  }
+
+  void _autoSwitchTripMode(LatLng uiPos) {
+    if (!_navigating || _lastChosenRoute == null) return;
+
+    // If we don't have a metro sequence, treat as non-metro segment.
+    if (_metroSeq.length < 2) {
+      if (_tripMode != _TripMode.drive) {
+        setState(() {
+          _tripMode = _TripMode.drive;
+          _trafficEnabled = true;
+        });
+      }
+      return;
+    }
+
+    final edges = _lastChosenRoute!.edgesInOrder;
+    final ids = _lastChosenRoute!.nodeIds;
+
+    // Are we at/past the last station? Then it’s last-mile → Drive mode.
+    final bool atOrPastFinalStation = _metroLeg >= (_metroSeq.length - 1);
+    if (atOrPastFinalStation) {
+      if (_tripMode != _TripMode.drive) {
+        setState(() {
+          _tripMode = _TripMode.drive;
+          _trafficEnabled = true;
+        });
+      }
+      return;
+    }
+
+    // Map our "next station" on metro to the corresponding route edge.
+    final int leg = _metroLeg.clamp(0, _metroSeq.length - 2);
+    final String nextId = _metroSeq[leg + 1].id;
+
+    int edgeIdx = -1;
+    for (int i = 0; i < ids.length - 1; i++) {
+      if (ids[i + 1] == nextId) {
+        edgeIdx = i;
+        break;
+      }
+    }
+
+    bool wantDrive;
+    if (edgeIdx >= 0) {
+      // If the current edge (leading to our "next station") is non-metro,
+      // we're on a walking/vehicle leg (first/last mile or transfer walk).
+      final e = edges[edgeIdx];
+      wantDrive = (e.kind != 'metro');
+    } else {
+      // Fallback: before reaching the first station or we couldn't map the edge.
+      // If we’re still far from the first station, treat as non-metro.
+      final StationNode first = _metroSeq.first;
+      final double dToFirst = Geolocator.distanceBetween(
+        uiPos.latitude,
+        uiPos.longitude,
+        first.pos.latitude,
+        first.pos.longitude,
+      );
+      wantDrive = (_metroLeg == 0 && dToFirst > 120.0);
+    }
+
+    if (wantDrive && _tripMode != _TripMode.drive) {
+      setState(() {
+        _tripMode = _TripMode.drive;
+        _trafficEnabled = true; // show traffic on walk/drive segments
+      });
+    } else if (!wantDrive && _tripMode != _TripMode.metro) {
+      setState(() {
+        _tripMode = _TripMode.metro;
+        // traffic overlay is only meaningful in car mode
+        _trafficEnabled = false;
+      });
     }
   }
 
@@ -248,6 +330,169 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _navHintEntry = null;
       }
     });
+  }
+
+  // ── MODE AUTOSWITCH: new helpers ─────────────────────────────────────────────
+  static const int _kModeSwitchVotes = 3; // hysteresis (3 consecutive ticks)
+  static const double _kBoardRadiusM = 120.0; // "I’m at the station" radius
+  static const double _kCorridorSlack = 1.2; // allow some map-match slack
+
+  int _wantDriveVotes = 0, _wantMetroVotes = 0;
+
+  void _resetModeVotes() {
+    _wantDriveVotes = 0;
+    _wantMetroVotes = 0;
+  }
+
+  bool _hasPlannedMetro() => _metroSeq.length >= 2 && _lastChosenRoute != null;
+  bool _isPastFinalStation() =>
+      _metroSeq.isNotEmpty && _metroLeg >= _metroSeq.length - 1;
+
+  /// Switch to DRIVE and build a live driving route from `here` to destination.
+  Future<void> _switchToDriveFrom(LatLng here) async {
+    if (_tripMode == _TripMode.drive) return;
+
+    setState(() {
+      _tripMode = _TripMode.drive;
+      _navPolyline = null; // car breadcrumb will be rebuilt
+      _trafficEnabled = false;
+    });
+
+    // Build car alternatives from current position so rerouting machinery is primed
+    if (_navDestination != null) {
+      await _renderDrivingRoute(here, _navDestination!); // calls _onPickDrive()
+    }
+  }
+
+  /// Switch back to METRO and redraw the planned metro overlays.
+  Future<void> _switchToMetro() async {
+    if (_tripMode == _TripMode.metro) return;
+
+    setState(() {
+      _tripMode = _TripMode.metro;
+      _driveAlternates = null;
+      _navSteps = [];
+      _navStepIndex = 0;
+      _navNow = null;
+      _navNext = null;
+      _trafficEnabled = false;
+    });
+
+    if (_lastChosenRoute != null) {
+      await _renderRouteOnMap(_lastChosenRoute!);
+    }
+  }
+
+  /// One-tick evaluator: decide which mode we *want*, then flip only after N votes.
+  /// DROP IN REPLACEMENT
+  /// Replace your existing `_autoSwitchTripModeTick` with this version.
+  /// (Assumes the helpers `_hasPlannedMetro()`, `_switchToDriveFrom()`, `_switchToMetro()`,
+  ///  `_mapMatchToMetroLeg()`, `_isPastFinalStation()` exist, plus the counters below.)
+
+  /// DROP-IN REPLACEMENT
+  /// Requires class fields:
+  ///   int _wantDriveVotes = 0;
+  ///   int _wantMetroVotes = 0;
+  /// And helpers already present in your class:
+  ///   bool _hasPlannedMetro();
+  ///   ({LatLng pos, double distanceM}) _mapMatchToMetroLeg(LatLng p);
+  ///   bool _isPastFinalStation();
+  ///   Future<void> _switchToDriveFrom(LatLng here);
+  ///   Future<void> _switchToMetro();
+
+  Future<void> _autoSwitchTripModeTick(
+    LatLng uiPos, {
+    required double speedMps, // <-- now required and used
+    bool metroAccept = false, // pass what you computed this tick
+    bool force = false, // allow initial forced evaluation
+  }) async {
+    // Tunables (you can hoist to class-level consts if you prefer)
+    const int _kModeSwitchVotes = 3; // consecutive ticks required to flip
+    const double _kCorridorSlack = 1.40; // tolerate a bit outside corridor
+    const double _kBoardRadiusM = 150.0; // “not yet boarded” distance
+    const double _kDriveSpeedMps = 6.0; // ~22 km/h: likely in a car/bus
+    const double _kStillSpeedMps = 0.6; // below this we consider “stationary”
+
+    // Normalize counters (defensive)
+    _wantDriveVotes = (_wantDriveVotes).clamp(0, _kModeSwitchVotes);
+    _wantMetroVotes = (_wantMetroVotes).clamp(0, _kModeSwitchVotes);
+
+    // If no metro is planned at all → always prefer drive.
+    if (!_hasPlannedMetro()) {
+      _wantDriveVotes = _kModeSwitchVotes;
+    } else {
+      // Distance from current UI position to the current metro leg
+      final double mmDist = _mapMatchToMetroLeg(uiPos).distanceM;
+
+      // Before boarding: far from the first station?
+      final StationNode first = _metroSeq.first;
+      final double dToFirst = Geolocator.distanceBetween(
+        uiPos.latitude,
+        uiPos.longitude,
+        first.pos.latitude,
+        first.pos.longitude,
+      );
+      final bool beforeBoarding =
+          (_metroLeg == 0) && (dToFirst > _kBoardRadiusM);
+
+      // Off the corridor noticeably?
+      final bool offCorridor =
+          mmDist > (_metroCorridorMeters * _kCorridorSlack);
+
+      // Past (or at) final station segment?
+      final bool afterFinal = _isPastFinalStation();
+
+      // Speed heuristics:
+      // - If we’re clearly moving fast, bias toward driving (unless clearly on metro).
+      // - If nearly still, don’t let speed alone trigger flips (avoid platform idling flaps).
+      final bool movingFast = speedMps.isFinite && speedMps >= _kDriveSpeedMps;
+      final bool nearlyStill =
+          (!speedMps.isFinite) || speedMps <= _kStillSpeedMps;
+
+      // Compose desire for this tick.
+      // metroAccept indicates we have a believable, corridor-snapped metro fix.
+      bool wantDrive =
+          afterFinal || beforeBoarding || offCorridor || !metroAccept;
+
+      // Strengthen the bias:
+      if (movingFast && !metroAccept) {
+        // Fast and not confidently on metro → strong drive vote
+        wantDrive = true;
+      }
+
+      // If nearly still, reduce noise: only vote to change if we have a strong reason.
+      if (nearlyStill &&
+          !afterFinal &&
+          !beforeBoarding &&
+          !offCorridor &&
+          metroAccept) {
+        wantDrive = false; // we’re comfortably on metro & stationary
+      }
+
+      // Vote
+      if (wantDrive) {
+        _wantDriveVotes = (_wantDriveVotes + 1).clamp(0, _kModeSwitchVotes);
+        _wantMetroVotes = 0;
+      } else {
+        _wantMetroVotes = (_wantMetroVotes + 1).clamp(0, _kModeSwitchVotes);
+        _wantDriveVotes = 0;
+      }
+    }
+
+    // Flip with hysteresis (or force on first evaluation)
+    if (force || _wantDriveVotes >= _kModeSwitchVotes) {
+      _wantDriveVotes = 0;
+      _wantMetroVotes = 0;
+      await _switchToDriveFrom(
+          uiPos); // seeds live car route (pre-board OR post-alight)
+      return;
+    }
+    if (force || _wantMetroVotes >= _kModeSwitchVotes) {
+      _wantDriveVotes = 0;
+      _wantMetroVotes = 0;
+      await _switchToMetro(); // restores metro snapping/banners
+      return;
+    }
   }
 
   bool get _isInForeground => _lifecycle == AppLifecycleState.resumed;
@@ -812,10 +1057,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _nearNextSince = null;
     _nextMinDist = double.infinity;
 
-    // >>> NEW: prompt-guards (ensure walk-to-first & transfer-next don’t repeat)
+    // prompt-guards
     _walkFirstPromptDone = false;
     _transferNextShown.clear();
-    // <<<
+    _transferPrepareShown.clear();
 
     _tripDestLabel =
         _destCtrl.text.isNotEmpty ? _destCtrl.text : _tripDestLabel;
@@ -833,7 +1078,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _tripDistance = 0;
     _lastNavPoint = null;
 
-    // Collect metro “context” for history (safe if not in metro)
+    // Metro context for history (safe if not in metro)
     final List<String> _chosenLines = (_lastChosenRoute?.lineSequence ?? [])
         .map((s) => s.toString())
         .toList();
@@ -841,7 +1086,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     String? _fromStationName;
     String? _toStationName;
     if (_lastChosenRoute != null) {
-      // first & last metro nodes on the chosen route
       final firstMetroId = _lastChosenRoute!.nodeIds.firstWhere(
         (id) => id.contains(':'),
         orElse: () => '',
@@ -859,14 +1103,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
 
     _activeTripId = await _travelSvc.startTrip(
-      mode: modeStr, // 'metro' | 'car'
+      mode: modeStr,
       originLabel: _tripOriginLabel,
       destLabel: _tripDestLabel,
       originLL: _tripOriginLL,
       destLL: _tripDestLL,
       metroLineKeys: (_tripMode == _TripMode.metro)
           ? (_chosenLines
-              ?.map((s) => s.isEmpty ? s : s[0].toUpperCase() + s.substring(1))
+              .map((s) => s.isEmpty ? s : s[0].toUpperCase() + s.substring(1))
               .toList())
           : null,
       fromStation: (_tripMode == _TripMode.metro) ? _fromStationName : null,
@@ -877,17 +1121,101 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     // seed with current position
     final pos = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.best);
-    _navDestination = _userDestination;
     final here0 = LatLng(pos.latitude, pos.longitude);
     _navPoints = [here0];
     _lastNavPoint = here0;
+
+    // default nav target = final destination (may be overridden below)
+    _navDestination = _userDestination;
 
     _navRemainingMeters = Geolocator.distanceBetween(pos.latitude,
         pos.longitude, _navDestination!.latitude, _navDestination!.longitude);
     _navSpeedMps = pos.speed;
 
-    // Car mode draws a breadcrumb; metro = no breadcrumb
-    if (_tripMode == _TripMode.drive &&
+    await _prepareNavArrowIcon();
+
+    setState(() {
+      _navigating = true;
+      _followEnabled = true;
+      _offRouteStreak = 0;
+      _isRerouting = false;
+    });
+
+    // ---------- Metro setup & first-mile override to the first station ----------
+    if (_tripMode == _TripMode.metro && _lastChosenRoute != null) {
+      _metroSeq = _lastChosenRoute!.nodeIds
+          .where((id) => id.contains(':'))
+          .map((id) => _lastChosenRoute!.nodes[id]!)
+          .toList();
+
+      _metroLeg = 0;
+      _nearNextSince = null;
+      _nextMinDist = double.infinity;
+      _metroNextName = (_metroSeq.length >= 2) ? _metroSeq[1].name : null;
+      _metroAfterName = (_metroSeq.length >= 3) ? _metroSeq[2].name : null;
+      _metroAlightAtNext =
+          (_metroSeq.length >= 2) && (_metroSeq[1].id == _metroSeq.last.id);
+
+      if (_metroSeq.isNotEmpty) {
+        final first = _metroSeq.first;
+        const double NEAR_STATION_M = 120.0;
+        final dToFirst = Geolocator.distanceBetween(
+          here0.latitude,
+          here0.longitude,
+          first.pos.latitude,
+          first.pos.longitude,
+        );
+
+        if (dToFirst > NEAR_STATION_M) {
+          // 1) Keep the metro route visible UNDER the live driving route
+          //    so the user always sees the planned line(s).
+          await _renderRouteOnMap(_lastChosenRoute!);
+
+          // 2) Mark first-mile to station and temporarily switch UI to car
+          _firstMileToStation = true;
+          _firstMilePrompted = false;
+          _firstStationLL = first.pos;
+          _firstStationName = first.name;
+          _firstStationLineKey = first.lineKey;
+
+          _tripMode = _TripMode.drive;
+          _trafficEnabled = true;
+          _navDestination = _firstStationLL;
+
+          // 3) Build the driving route BUT preserve the metro overlays we just drew
+          await _renderDrivingRoute(here0, _firstStationLL!,
+              preserveMetroOverlays: true);
+
+          // 4) Banner text + hint
+          setState(() {
+            _navNow = '${getTranslated(context, "Head to")} ${first.name}';
+            _navNext =
+                '${_cap(first.lineKey)} ${getTranslated(context, "line")}';
+          });
+          if (_isInForeground && mounted) {
+            _showNavHint(
+              NavHintType.board,
+              '${getTranslated(context, "Head to")} ${first.name} • '
+              '${getTranslated(context, "to board the")} ${_cap(first.lineKey)} ${getTranslated(context, "line")}',
+            );
+            HapticFeedback.selectionClick();
+          }
+          AppLocalNotifications.show(
+            body:
+                '${getTranslated(context, "Head to")} ${first.name} • ${getTranslated(context, "to board the")} ${_cap(first.lineKey)} ${getTranslated(context, "line")}',
+          );
+        } else {
+          // Already at/near first station — metro mode from the start
+          _firstMileToStation = false;
+          _firstStationLL = first.pos;
+          _firstStationName = first.name;
+          _firstStationLineKey = first.lineKey;
+          await _renderRouteOnMap(
+              _lastChosenRoute!); // make sure line is visible
+          _navPolyline = null; // no driving breadcrumb in metro
+        }
+      }
+    } else if (_tripMode == _TripMode.drive &&
         _driveAlternates != null &&
         _driveAlternates!.isNotEmpty) {
       final r = _driveAlternates![_drivePick];
@@ -907,43 +1235,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           ? (_navSteps[1].instruction ?? getTranslated(context, 'nav.continue'))
           : null;
     } else {
-      _navPolyline = null; // <<< no trail in metro
-    }
-
-    await _prepareNavArrowIcon();
-
-    setState(() {
-      _navigating = true;
-      _followEnabled = true;
-      _offRouteStreak = 0;
-      _isRerouting = false;
-    });
-
-    // ---- Metro leg setup + initial "walk to first station" hint (one-shot) ---
-    if (_tripMode == _TripMode.metro && _lastChosenRoute != null) {
-      _metroSeq = _lastChosenRoute!.nodeIds
-          .where((id) => id.contains(':'))
-          .map((id) => _lastChosenRoute!.nodes[id]!)
-          .toList();
-
-      _metroLeg = 0;
-      _nearNextSince = null;
-      _nextMinDist = double.infinity;
-      _metroNextName = (_metroSeq.length >= 2) ? _metroSeq[1].name : null;
-      _metroAfterName = (_metroSeq.length >= 3) ? _metroSeq[2].name : null;
-      _metroAlightAtNext =
-          (_metroSeq.length >= 2) && (_metroSeq[1].id == _metroSeq.last.id);
-
-      if (_metroSeq.isNotEmpty) {
-        final first = _metroSeq.first;
-        final d = Geolocator.distanceBetween(
-          here0.latitude,
-          here0.longitude,
-          first.pos.latitude,
-          first.pos.longitude,
-        );
-        // (no immediate snackbar here; alerts handled in stream)
-      }
+      _navPolyline = null; // no trail in metro
     }
 
     await _bgNav.start(dest: _navDestination!);
@@ -953,31 +1245,42 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   void _attachNavStream() {
     _uiNavSub?.cancel();
 
-    // ── De-dupe + background-delivery for alerts ───────────────────────────────
-    // (clears whenever this method is called, i.e., per trip/session)
+    // de-duped alerts
     final Map<String, DateTime> _alertShownAt = {};
     const Duration _alertCooldown = Duration(seconds: 45);
-
-    // >>> NEW: foreground uses floating hint; timing and de-dupe preserved
     void _notifyOnce(String key, String message,
         {NavHintType type = NavHintType.walk}) {
-      // Don't nag when not actually navigating (prevents spam on the Home sheet)
       if (!_navigating) return;
-
       final now = DateTime.now();
       final last = _alertShownAt[key];
       if (last == null || now.difference(last) >= _alertCooldown) {
         _alertShownAt[key] = now;
-
-        // Show in-app (only if we're visible) AND always post a local notification
         if (_isInForeground && mounted) {
-          _showNavHint(type, message); // floating hint (no SnackBar)
+          _showNavHint(type, message);
           HapticFeedback.selectionClick();
         }
-        AppLocalNotifications.show(body: message); // works in background/closed
+        AppLocalNotifications.show(body: message);
       }
     }
-    // <<<
+
+    // Helper: nearest metro station anywhere in the network
+    StationNode? _nearestStation(LatLng p) {
+      StationNode? bestNode;
+      double best = double.infinity;
+      for (final s in _graph.stationMap.values) {
+        final d = Geolocator.distanceBetween(
+          p.latitude,
+          p.longitude,
+          s.pos.latitude,
+          s.pos.longitude,
+        );
+        if (d < best) {
+          best = d;
+          bestNode = s;
+        }
+      }
+      return bestNode;
+    }
 
     _uiNavSub = _bgNav.updates.listen((u) async {
       final now = DateTime.now();
@@ -986,31 +1289,27 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       LatLng uiPos;
       final prev = _lastNavPoint;
 
-      // Car dead-reckoning allowed only when moving & short gap
+      // dead-reckon allowed only for car mode & short gaps
       final drAllowed = (_tripMode == _TripMode.drive) &&
           (u.speedMps.isFinite && u.speedMps > 1.4) &&
           now.difference(_lastFixAt).inMilliseconds < 2500;
 
-      // ── Metro: validate, recover, map-match ──────────────────────────────────
+      // ── Metro: validate, recover, map-match ──────────────────────────────
       bool metroAccept = true;
       _justAcceptedRaw = false;
 
       if (isRealFix && _tripMode == _TripMode.metro) {
-        // Reject absurd speeds
         if (u.speedMps.isFinite && u.speedMps > _metroMaxSpeedMps) {
           metroAccept = false;
         }
 
-        // Corridor depends on GPS gap (recovery after tunnel)
         final gapSecs = now.difference(_lastFixAt).inSeconds;
         final corridor = (gapSecs > recoverGapSecs)
             ? _recoveryCorridorM
             : _metroCorridorMeters;
 
-        // Try leg map-match
         var mm = _mapMatchToMetroLeg(here);
         if (mm.distanceM > corridor) {
-          // Whole-route recovery
           final all = _mapMatchToWholeMetro(here);
           if (all.distanceM <= _recoveryCorridorM) {
             here = all.pos;
@@ -1018,10 +1317,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             mm = (pos: all.pos, distanceM: all.distanceM);
             metroAccept = true;
           } else {
-            // FINAL RECOVERY: accept raw fix ONCE to re-anchor (no teleporting)
             final double jumpFromPrev =
                 (prev == null) ? 0.0 : _distMeters(prev, here);
-            final bool saneJump = jumpFromPrev <= 800.0; // ~0.8 km cap
+            final bool saneJump = jumpFromPrev <= 800.0;
             if (gapSecs > recoverGapSecs && saneJump) {
               metroAccept = true;
               _justAcceptedRaw = true;
@@ -1030,11 +1328,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             }
           }
         } else {
-          here = mm.pos; // snap to leg
+          here = mm.pos; // snap to current leg
         }
       }
 
-      // ── Station snap when leg advanced but no accepted fix ───────────────────
+      // Station-snap fallback when leg advanced but no accepted fix
       LatLng? stationSnap;
       if (_tripMode == _TripMode.metro &&
           _metroSeq.length >= 2 &&
@@ -1055,7 +1353,85 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         uiPos = (isRealFix || drAllowed) ? here : (_lastNavPoint ?? here);
       }
 
-      // ── Distance / trail ─────────────────────────────────────────────────────
+      // ── FIRST-MILE TO STATION: keep instructing; if user reaches ANY station, flip to metro and (re)plan
+      if (_firstMileToStation) {
+        if (!_firstMilePrompted) {
+          final lKey = _firstStationLineKey ?? '';
+          _notifyOnce(
+            'firstmile_head_${_firstStationName}_$lKey',
+            '${getTranslated(context, "Head to")} ${_firstStationName ?? ""} • '
+                '${getTranslated(context, "to board the")} ${_cap(lKey)} ${getTranslated(context, "line")}',
+            type: NavHintType.board,
+          );
+          _firstMilePrompted = true;
+        }
+
+        final StationNode? near = _nearestStation(uiPos);
+        if (near != null) {
+          final dToAny = Geolocator.distanceBetween(
+            uiPos.latitude,
+            uiPos.longitude,
+            near.pos.latitude,
+            near.pos.longitude,
+          );
+
+          // Arrived to a station? Accept within ~55m
+          if (dToAny < 55.0) {
+            // Stop first-mile drive visuals
+            _firstMileToStation = false;
+            _firstMilePrompted = false;
+            _trafficEnabled = false;
+            _navPolyline = null;
+            _navPoints.clear();
+            _offRouteStreak = 0;
+
+            // Flip to metro
+            _tripMode = _TripMode.metro;
+            if (_tripDestLL != null) _navDestination = _tripDestLL;
+
+            // If this is a *different* station than originally planned, re-plan from here
+            final String plannedFirstId =
+                (_metroSeq.isNotEmpty) ? _metroSeq.first.id : '';
+            final bool differentStation =
+                (near.id != plannedFirstId) || _lastChosenRoute == null;
+
+            if (differentStation && _tripDestLL != null) {
+              final newOpts = _planRoutes(near.pos, _tripDestLL!);
+              if (newOpts.isNotEmpty) {
+                _lastChosenRoute = newOpts.first;
+                // draw chosen metro route overlays
+                await _renderRouteOnMap(_lastChosenRoute!);
+                // refresh metro sequence context for banners
+                _metroSeq = _lastChosenRoute!.nodeIds
+                    .where((id) => id.contains(':'))
+                    .map((id) => _lastChosenRoute!.nodes[id]!)
+                    .toList();
+                _metroLeg = 0;
+                _metroNextName =
+                    (_metroSeq.length >= 2) ? _metroSeq[1].name : null;
+                _metroAfterName =
+                    (_metroSeq.length >= 3) ? _metroSeq[2].name : null;
+                _metroAlightAtNext = (_metroSeq.length >= 2) &&
+                    (_metroSeq[1].id == _metroSeq.last.id);
+              }
+            } else {
+              // Keep original plan; just ensure overlays are visible again
+              if (_lastChosenRoute != null) {
+                await _renderRouteOnMap(_lastChosenRoute!);
+              }
+            }
+
+            _notifyOnce(
+              'board_now_${near.id}',
+              '${getTranslated(context, "Board at")} ${near.name} • '
+                  '${getTranslated(context, "Line")}: ${_cap(near.lineKey)}',
+              type: NavHintType.board,
+            );
+          }
+        }
+      }
+
+      // ── Distance / trail accumulation ─────────────────────────────────────
       if (_tripMode == _TripMode.drive) {
         if (isRealFix && prev != null) {
           final seg = Geolocator.distanceBetween(
@@ -1069,7 +1445,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               _navPolyline?.copyWith(pointsParam: List.of(_navPoints));
         }
       } else {
-        // metro: no breadcrumb; still count distance on accepted or station-snap
         if ((isRealFix && metroAccept) && prev != null) {
           final seg = Geolocator.distanceBetween(
               prev.latitude, prev.longitude, uiPos.latitude, uiPos.longitude);
@@ -1077,7 +1452,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         }
       }
 
-      // ── Marker / heading ─────────────────────────────────────────────────────
+      // ── Marker / heading ─────────────────────────────────────────────────
       double brg;
       if ((isRealFix && (_tripMode != _TripMode.metro || metroAccept)) &&
           prev != null &&
@@ -1100,7 +1475,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         );
       }
 
-      // ── Live status ──────────────────────────────────────────────────────────
+      // Live status
       double uiSpeed = u.speedMps;
       if (_tripMode == _TripMode.metro) {
         if (!(isRealFix && metroAccept)) uiSpeed = 0.0;
@@ -1111,16 +1486,17 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
       if (_navDestination != null) {
         _navRemainingMeters = Geolocator.distanceBetween(
-            uiPos.latitude,
-            uiPos.longitude,
-            _navDestination!.latitude,
-            _navDestination!.longitude);
+          uiPos.latitude,
+          uiPos.longitude,
+          _navDestination!.latitude,
+          _navDestination!.longitude,
+        );
       }
 
-      // ── Car steps ────────────────────────────────────────────────────────────
+      // Car step advancement
       if (isRealFix && _tripMode == _TripMode.drive) _maybeAdvanceStep(here);
 
-      // ── METRO leg advance hysteresis ─────────────────────────────────────────
+      // ── Metro leg advance + last-mile switch to car ──────────────────────
       final bool canAdvanceMetro = (_tripMode == _TripMode.metro) &&
           (_metroSeq.length >= 2) &&
           ((isRealFix && metroAccept) || stationSnap != null);
@@ -1165,14 +1541,36 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           }
           _nearNextSince = null;
           _nextMinDist = double.infinity;
+
+          // last-mile auto switch to car if destination not right next to final station
+          final bool atFinalStation = (_metroLeg == _metroSeq.length - 1);
+          if (atFinalStation && _tripDestLL != null) {
+            final StationNode finalSt = _metroSeq.last;
+            final double dToDestFromFinal = Geolocator.distanceBetween(
+                finalSt.pos.latitude,
+                finalSt.pos.longitude,
+                _tripDestLL!.latitude,
+                _tripDestLL!.longitude);
+
+            if (dToDestFromFinal > 80.0) {
+              _tripMode = _TripMode.drive;
+              _trafficEnabled = true;
+              _navDestination = _tripDestLL;
+              await _renderDrivingRoute(finalSt.pos, _tripDestLL!);
+
+              _notifyOnce(
+                'lastmile_drive_${finalSt.id}',
+                '${getTranslated(context, "Drive to destination from")} ${finalSt.name}',
+                type: NavHintType.walk,
+              );
+            }
+          }
         }
       }
 
-      // Remember for station-snap on next ticks
       _lastLegShown = _metroLeg;
 
-      // ── Compose metro status + alerts (walk/transfer/alight) ─────────────────
-      // ── Compose metro status + alerts (walk/prepare/transfer/alight) ─────────
+      // ── Compose metro status + alerts (walk/prepare/transfer/alight) ─────
       if (_tripMode == _TripMode.metro && _metroSeq.length >= 2) {
         final StationNode curr = _metroSeq[_metroLeg];
         final StationNode next =
@@ -1180,7 +1578,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         final String currLine = curr.lineKey;
         final String nextLine = next.lineKey;
 
-        // Stops left on current line and (optional) transfer target
         int stopsLeftOnLine = 0;
         String? transferToLine;
         for (int i = _metroLeg; i < _metroSeq.length - 1; i++) {
@@ -1197,7 +1594,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         final bool transferAtNext =
             (_metroLeg + 1 < _metroSeq.length - 1) && (nextLine != currLine);
 
-        // Update banner fields for your UI
         _metroCurLineKey = currLine;
         _stopsLeftOnLine = stopsLeftOnLine;
         _metroNextName = next.name;
@@ -1208,8 +1604,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _transferToLineKey = transferToLine;
         _metroAlightAtNext = alightAtNext;
 
-        // ==== NEW: “prepare to transfer” heads-up (e.g., 2 stops ahead) =========
-        const int _TRANSFER_PREP_STOPS = 2; // tweak to 1/3 if you prefer
+        // “prepare to transfer soon” heads-up 2 stops ahead
+        const int _TRANSFER_PREP_STOPS = 2;
         _transferSoon = false;
         _transferSoonStopsAway = 0;
         _transferSoonLineKey = null;
@@ -1218,18 +1614,16 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         int? xferLegIdx;
         for (int i = _metroLeg; i < _metroSeq.length - 1; i++) {
           if (_metroSeq[i].lineKey != _metroSeq[i + 1].lineKey) {
-            xferLegIdx = i; // transfer occurs on hop i -> i+1
+            xferLegIdx = i;
             break;
           }
         }
-
         if (xferLegIdx != null) {
-          final int stopsToTransfer = (xferLegIdx - _metroLeg) + 1; // next = +1
+          final int stopsToTransfer = (xferLegIdx - _metroLeg) + 1;
           if (stopsToTransfer == _TRANSFER_PREP_STOPS) {
             final StationNode transferAt = _metroSeq[xferLegIdx + 1];
             final String toLine = _metroSeq[xferLegIdx + 1].lineKey;
             final key = 'xfer_prep_${transferAt.id}_$toLine';
-
             if (!_transferPrepareShown.contains(key)) {
               final msg =
                   '${getTranslated(context, "Get ready to change lines at")} ${transferAt.name} '
@@ -1237,37 +1631,34 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               _notifyOnce(key, msg, type: NavHintType.prepare);
               _transferPrepareShown.add(key);
             }
-
-            // expose to UI/onboard panel
             _transferSoon = true;
             _transferSoonStopsAway = stopsToTransfer;
             _transferSoonLineKey = toLine;
             _transferSoonStationName = transferAt.name;
           }
         }
-        // ==== END NEW ============================================================
 
-        // A) BEFORE BOARDING: show “Walk to FIRST station …” once
-        final StationNode first = _metroSeq.first;
-        final bool stillBeforeBoard = (_metroLeg == 0);
-        final double dToFirst = Geolocator.distanceBetween(
-          uiPos.latitude,
-          uiPos.longitude,
-          first.pos.latitude,
-          first.pos.longitude,
-        );
-        if (dToFirst < 80.0) {
-          _walkFirstPromptDone = true;
-        }
-        if (stillBeforeBoard && !_walkFirstPromptDone && dToFirst > 120.0) {
-          final msg = '${getTranslated(context, "Walk to")} ${first.name} '
-              '${getTranslated(context, "to board the")} ${getTranslated(context, currLine)}';
-          _notifyOnce('walk_board_once_${first.id}_$currLine', msg,
-              type: NavHintType.board);
-          _walkFirstPromptDone = true;
+        // BEFORE BOARDING prompt if stayed in Metro mode from start
+        if (!_firstMileToStation && _metroSeq.isNotEmpty) {
+          final StationNode first = _metroSeq.first;
+          final bool stillBeforeBoard = (_metroLeg == 0);
+          final double dToFirst = Geolocator.distanceBetween(
+            uiPos.latitude,
+            uiPos.longitude,
+            first.pos.latitude,
+            first.pos.longitude,
+          );
+          if (dToFirst < 80.0) _walkFirstPromptDone = true;
+          if (stillBeforeBoard && !_walkFirstPromptDone && dToFirst > 120.0) {
+            final msg = '${getTranslated(context, "Walk to")} ${first.name} '
+                '${getTranslated(context, "to board the")} ${getTranslated(context, currLine)}';
+            _notifyOnce('walk_board_once_${first.id}_$currLine', msg,
+                type: NavHintType.board);
+            _walkFirstPromptDone = true;
+          }
         }
 
-        // B) TRANSFER: announce one-stop ahead (existing)
+        // TRANSFER next
         if (transferAtNext && transferToLine != null) {
           final key = 'xfer_next_${next.id}_$transferToLine';
           if (!_transferNextShown.contains(key)) {
@@ -1279,7 +1670,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           }
         }
 
-        // C) ALIGHT AT NEXT (existing)
+        // ALIGHT at next
         if (alightAtNext && _metroLeg >= 1) {
           _notifyOnce(
             'alight_${next.id}',
@@ -1289,11 +1680,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         }
       }
 
-      // ── Periodic progress write (every ~10s) ─────────────────────────────────
+      // ── periodic progress write (~10s) ──────────────────────────────────
       final secs = now.difference(_tripStartAt ?? now).inSeconds;
       final okToWrite = isRealFix &&
           (_tripMode != _TripMode.metro || metroAccept || _justAcceptedRaw);
-      if (okToWrite && _activeTripId != null && secs % 10 == 0) {
+      if (okToWrite && _activeTripId != null && secs >= 10 && secs % 10 == 0) {
         await _travelSvc.updateProgress(
           entryId: _activeTripId!,
           distanceMeters: _tripDistance,
@@ -1301,7 +1692,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         );
       }
 
-      // ── Car rerouting (unchanged) ────────────────────────────────────────────
+      // ── car re-routing ──────────────────────────────────────────────────
       if (isRealFix &&
           _tripMode == _TripMode.drive &&
           _driveAlternates != null &&
@@ -1331,7 +1722,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         }
       }
 
-      // ── Camera follow ────────────────────────────────────────────────────────
+      // ── camera follow ───────────────────────────────────────────────────
       if (_tripMode == _TripMode.metro) {
         if ((isRealFix && metroAccept) || stationSnap != null) {
           await _throttledFollow(uiPos, _lastFixHeading,
@@ -1341,7 +1732,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         await _throttledFollow(uiPos, _lastFixHeading, speedMps: _navSpeedMps);
       }
 
-      // ── Update "lasts" ───────────────────────────────────────────────────────
+      // ── update lasts ────────────────────────────────────────────────────
       if (_tripMode == _TripMode.metro) {
         if ((isRealFix && metroAccept) ||
             stationSnap != null ||
@@ -1360,7 +1751,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _lastNavPoint = uiPos;
       }
 
-      // ── Arrival detection (also notify in background) ────────────────────────
+      // ── arrival detection (keeps original guards) ───────────────────────
       bool allowFinalStationEnd = false;
       if (_tripMode == _TripMode.metro &&
           _metroSeq.isNotEmpty &&
@@ -1374,7 +1765,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         allowFinalStationEnd = dToDestFromFinal <= 80.0;
       }
 
-      if (_navDestination != null &&
+      if (!_firstMileToStation &&
+          _navDestination != null &&
           (isRealFix || stationSnap != null || _justAcceptedRaw)) {
         final moving = _navSpeedMps.isFinite && _navSpeedMps > 0.8;
 
@@ -1412,7 +1804,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         }
       }
 
-      if (isRealFix && _navDestination != null && _navRemainingMeters < 35) {
+      if (!_firstMileToStation &&
+          isRealFix &&
+          _navDestination != null &&
+          _navRemainingMeters < 35) {
         final msg = getTranslated(context, 'You have arrived.');
         if (_isInForeground && mounted) _notify(msg);
         AppLocalNotifications.show(body: msg);
@@ -1423,6 +1818,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       if (mounted) setState(() {});
     });
   }
+
+  bool _preboardCar = false; // true while driving to the first metro station
+  bool _postAlightCar = false;
+
+// true while driving from final station to dest
 
   Future<void> _onRecenter() async {
     setState(() => _followEnabled = true);
@@ -2073,20 +2473,32 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 
   // ===== DRIVING route renderer (NEW) =====
-  Future<void> _renderDrivingRoute(LatLng origin, LatLng dest) async {
-    setState(() {
-      _routePolylines.clear();
-      _routeMarkers.clear();
-      _showAllLinesUnderRoute = false;
-      _selectedLineKey = null;
+  // ===== DRIVING route renderer (UPDATED) =====
+  // ===== DRIVING route renderer (MERGE-SAFE) =====
+  Future<void> _renderDrivingRoute(
+    LatLng origin,
+    LatLng dest, {
+    bool preserveMetroOverlays = false, // keep metro lines underneath
+  }) async {
+    // Only clear overlays if we’re NOT preserving metro lines
+    if (!preserveMetroOverlays) {
+      setState(() {
+        _routePolylines.clear();
+        _routeMarkers.clear();
+        _showAllLinesUnderRoute = false;
+        _selectedLineKey = null;
+      });
+    }
 
+    // Reset driving nav state
+    setState(() {
       _driveAlternates = null;
       _drivePick = 0;
       _navSteps = [];
       _navStepIndex = 0;
       _navNow = null;
       _navNext = null;
-      _trafficEnabled = false; // enable after we actually have a route
+      _trafficEnabled = false; // turn on after we have a route
     });
 
     final alts = await _dirs.computeDriveAlternatives(
@@ -2096,113 +2508,122 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     );
 
     if (alts.isEmpty) {
-      // Fallback: routeViaRoads polyline + neutral banner state
+      // Fallback polyline
       final fb =
           await _dirs.routeViaRoads(origin, dest, mode: TravelMode.drive);
-      setState(() {
-        _routePolylines = {
-          Polyline(
-            polylineId: const PolylineId('drive_fb'),
-            color: Colors.black87,
-            width: 6,
-            points: fb?.points ?? [origin, dest],
-            zIndex: 1200,
-          ),
-        };
-        _routeMarkers = _driveMarkers(origin, dest);
-        _trafficEnabled = true;
+      final driveSet = <Polyline>{
+        Polyline(
+          polylineId: const PolylineId('drive_fb'),
+          color: Colors.black87,
+          width: 6,
+          points: fb?.points ?? [origin, dest],
+          zIndex: 2200, // above metro
+        ),
+      };
+      final driveMarkers = _driveMarkers(origin, dest);
 
-        // Seed a sensible banner in fallback (no detailed steps)
+      setState(() {
+        // MERGE if preserving
+        _routePolylines = preserveMetroOverlays
+            ? {..._routePolylines, ...driveSet}
+            : driveSet;
+        _routeMarkers = preserveMetroOverlays
+            ? {..._routeMarkers, ...driveMarkers}
+            : driveMarkers;
+
+        _trafficEnabled = true;
         _navSteps = [];
         _navStepIndex = 0;
         _navNow = getTranslated(context, 'Head to route');
         _navNext = null;
       });
+
       await _fitCameraToRoute();
       return;
     }
 
     _driveAlternates = alts;
 
-    _drawDrivePolylines();
+    // ⬅️ Draw driving polylines; MERGE if preserving metro overlays
+    _drawDrivePolylines(preserveExisting: preserveMetroOverlays);
 
+    final driveMarkers = _driveMarkers(origin, dest);
     setState(() {
-      _routeMarkers = _driveMarkers(origin, dest);
+      _routeMarkers = preserveMetroOverlays
+          ? {..._routeMarkers, ...driveMarkers}
+          : driveMarkers;
     });
 
     await _fitCameraToRoute();
 
-    // Enable traffic layer and seed banner/steps from the selected route
-    setState(() {
-      _trafficEnabled = true;
-    });
-    _onPickDrive(
-        _drivePick); // sets _navSteps/_navNow/_navNext and rebuilds ETA badges
+    setState(() => _trafficEnabled = true);
+    _onPickDrive(_drivePick); // seeds steps/banner
   }
 
-  void _drawDrivePolylines() {
+  // Draw driving alternatives; can MERGE with existing polylines (e.g., metro layer)
+  void _drawDrivePolylines({bool preserveExisting = false}) {
     if (_driveAlternates == null || _driveAlternates!.isEmpty) return;
 
-    final set = <Polyline>{};
+    final newSet = <Polyline>{};
 
     for (int i = 0; i < _driveAlternates!.length; i++) {
       final r = _driveAlternates![i];
 
       // Non-selected (thin neutral)
       if (i != _drivePick) {
-        set.add(Polyline(
+        newSet.add(Polyline(
           polylineId: PolylineId('drive_alt_$i'),
           color: Colors.blueGrey.shade400,
           width: 4,
           points: r.points,
-          zIndex: 700,
+          zIndex: 1700, // keep above metro, below selected segments
           consumeTapEvents: true,
-          onTap: () => _onPickDrive(i), // ← tap to choose
+          onTap: () => _onPickDrive(i),
         ));
         continue;
       }
 
       // Selected route underlay
-      set.add(Polyline(
+      newSet.add(Polyline(
         polylineId: PolylineId('drive_under_$i'),
         color: Colors.blueGrey.shade300.withOpacity(0.6),
         width: 6,
         points: r.points,
-        zIndex: 900,
+        zIndex: 1850,
         consumeTapEvents: true,
         onTap: () => _onPickDrive(i),
       ));
 
-      // Traffic segments (selected)
+      // Traffic coloring for the selected route
       if (r.traffic.isNotEmpty) {
         int lastIdx = 0;
         Color segColor(String? s) {
           final t = (s ?? '').toUpperCase();
           if (t.contains('JAM')) return Colors.red;
           if (t.contains('SLOW')) return Colors.orange;
-          return Colors.blue; // FREE_FLOW / NORMAL (Google-like cyan/blue)
+          return Colors.blue; // free/normal
         }
 
         for (final seg in r.traffic) {
           final a = seg.startIndex.clamp(0, r.points.length - 1);
           final b = seg.endIndex.clamp(0, r.points.length);
           if (a > lastIdx) {
-            set.add(Polyline(
+            newSet.add(Polyline(
               polylineId: PolylineId('drive_gap_${i}_${lastIdx}_$a'),
               color: segColor('FREE_FLOW'),
               width: 10,
               points: r.points.sublist(lastIdx, a),
-              zIndex: 1500,
+              zIndex: 2000,
               consumeTapEvents: true,
               onTap: () => _onPickDrive(i),
             ));
           }
-          set.add(Polyline(
+          newSet.add(Polyline(
             polylineId: PolylineId('drive_tr_${i}_${a}_$b'),
             color: segColor(seg.speed),
             width: 6,
             points: r.points.sublist(a, b),
-            zIndex: 1600,
+            zIndex: 2010,
             startCap: Cap.roundCap,
             endCap: Cap.roundCap,
             jointType: JointType.round,
@@ -2212,51 +2633,59 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           lastIdx = b;
         }
         if (lastIdx < r.points.length) {
-          set.add(Polyline(
+          newSet.add(Polyline(
             polylineId:
                 PolylineId('drive_tail_${i}_${lastIdx}_${r.points.length}'),
             color: Colors.blue,
             width: 6,
             points: r.points.sublist(lastIdx),
-            zIndex: 1500,
+            zIndex: 2000,
             consumeTapEvents: true,
             onTap: () => _onPickDrive(i),
           ));
         }
       } else {
-        // Fallback coloring with ETA ratio (live vs no-traffic)
+        // Fallback coloring by congestion ratio
         double ratio;
         if (r.staticDurationSeconds > 0) {
           ratio = r.durationSeconds / r.staticDurationSeconds;
         } else {
-          // very rare: if static missing, approximate free-flow at ~65 km/h
           final freeFlowSecs = (r.distanceMeters / (65.0 / 3.6)).round();
           ratio = freeFlowSecs > 0 ? r.durationSeconds / freeFlowSecs : 1.0;
         }
 
         Color trafficColor;
         if (ratio < 1.10) {
-          trafficColor = Colors.blue; // free/normal
+          trafficColor = Colors.blue;
         } else if (ratio < 1.35) {
-          trafficColor = Colors.orange; // slow/moderate
+          trafficColor = Colors.orange;
         } else {
-          trafficColor = Colors.red; // heavy/jammy
+          trafficColor = Colors.red;
         }
 
-        set.add(Polyline(
+        newSet.add(Polyline(
           polylineId: PolylineId('drive_main_noint_$i'),
           color: trafficColor,
-          width: 6, // a bit thicker for the selected route
+          width: 6,
           points: r.points,
-          zIndex: 1500,
+          zIndex: 2010,
           consumeTapEvents: true,
           onTap: () => _onPickDrive(i),
         ));
       }
     }
 
-    setState(() => _routePolylines = set);
-    _rebuildDriveEtaBadges(); // ← create/update inline “21 min” labels
+    // ⬅️ MERGE or REPLACE
+    setState(() {
+      _routePolylines = preserveExisting
+          ? {
+              ..._routePolylines,
+              ...newSet
+            } // keeps whatever was already drawn (metro)
+          : newSet; // default behavior: replace
+    });
+
+    _rebuildDriveEtaBadges(); // update inline ETA badges
   }
 
   Set<Marker> _driveMarkers(LatLng origin, LatLng dest) => {
@@ -2534,7 +2963,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         infoWindow: InfoWindow(
           title: firstStation.name,
           snippet:
-              '${getTranslated(context, 'Board')} • ${_cap(firstStation.lineKey)} ${getTranslated(context, 'line')}',
+              '${getTranslated(context, 'Board at')} • ${_cap(firstStation.lineKey)} ${getTranslated(context, 'line')}',
         ),
         zIndex: 1200,
       ));

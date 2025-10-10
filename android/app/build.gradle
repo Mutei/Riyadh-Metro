@@ -1,8 +1,9 @@
 plugins {
     id "com.android.application"
-    id "kotlin-android"
+    id "org.jetbrains.kotlin.android"
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id "dev.flutter.flutter-gradle-plugin"
+    id "com.google.gms.google-services"
 }
 
 def localProperties = new Properties()
@@ -13,74 +14,49 @@ if (localPropertiesFile.exists()) {
     }
 }
 
-def flutterVersionCode = localProperties.getProperty("flutter.versionCode")
-if (flutterVersionCode == null) {
-    flutterVersionCode = "1"
-}
-
-def flutterVersionName = localProperties.getProperty("flutter.versionName")
-if (flutterVersionName == null) {
-    flutterVersionName = "1.0"
-}
+def flutterVersionCode = localProperties.getProperty("flutter.versionCode") ?: "1"
+def flutterVersionName = localProperties.getProperty("flutter.versionName") ?: "1.0"
 
 android {
     namespace = "com.example.darb"
-    compileSdk = flutter.compileSdkVersion
+
+    // compile against highest SDK any plugin requires
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
-    compileOptions {
-        sourceCompatibility = JavaVersion.VERSION_1_8
-        targetCompatibility = JavaVersion.VERSION_1_8
-    }
-
-    // Keep Kotlin target aligned with Java target here
-    kotlinOptions {
-        jvmTarget = "1.8"
-    }
-
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.darb"
-        // For Firebase and modern libs, 21+ works; you asked for 25, keeping it.
         minSdkVersion 25
-        targetSdkVersion 34
+        targetSdkVersion 36
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName
         multiDexEnabled true
     }
 
+    // AGP 8.x → Java 17
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+        coreLibraryDesugaringEnabled true
+    }
+    kotlinOptions { jvmTarget = "17" }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // replace with your real release keystore when ready
             signingConfig = signingConfigs.debug
+            minifyEnabled false
+            shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
-}
-
-// Ensure all transitive Kotlin/coroutines deps are compatible with Kotlin 1.9.10
-configurations.all {
-    resolutionStrategy {
-        // Kotlin stdlib pins
-        force "org.jetbrains.kotlin:kotlin-stdlib:1.9.10"
-        force "org.jetbrains.kotlin:kotlin-stdlib-jdk7:1.9.10"
-        force "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.9.10"
-
-        // Coroutines compatible with Kotlin 1.9.x (pick 1.7.3 or 1.8.1; here we use 1.7.3)
-        force "org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3"
-        force "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
-    }
-}
-
-dependencies {
-    // Explicit stdlib to match your chosen Kotlin plugin (you set kotlin_version = 1.9.10)
-    implementation "org.jetbrains.kotlin:kotlin-stdlib:1.9.10"
-
-    // Multidex since multiDexEnabled = true
-    implementation "androidx.multidex:multidex:2.0.1"
 }
 
 flutter {
     source = "../.."
 }
-apply plugin: 'com.google.gms.google-services'
+
+dependencies {
+    implementation "androidx.multidex:multidex:2.0.1"
+    coreLibraryDesugaring "com.android.tools:desugar_jdk_libs:2.1.2"
+}

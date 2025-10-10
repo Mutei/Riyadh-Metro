@@ -64,7 +64,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
         // Keep dialog rounded; colors will follow theme (light/dark)
         return Theme(
           data: Theme.of(context).copyWith(
-            dialogTheme: const DialogTheme(
+            dialogTheme: const DialogThemeData(
               shape: RoundedRectangleBorder(
                 borderRadius: BorderRadius.all(Radius.circular(16)),
               ),

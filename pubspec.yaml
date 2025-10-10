@@ -54,7 +54,8 @@ dependencies:
   firebase_messaging: ^16.0.2
   flutter_tts: ^4.2.3
   just_audio: ^0.9.46
-  light: ^3.0.1
+  light: ^4.1.0
+
 
 dev_dependencies:
   flutter_test:
