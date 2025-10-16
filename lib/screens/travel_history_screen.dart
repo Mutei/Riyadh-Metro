@@ -38,6 +38,10 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   DateTimeRange? _range;
   _Sort _sort = _Sort.recent;
 
+  // NEW: Metro line filters (dynamic from user's trips)
+  final Set<String> _availableLines = {}; // canonical: Blue, Red, ...
+  final Set<String> _selectedLines = {}; // chosen in UI
+
   // Selection mode
   bool _selectionMode = false;
   final Set<String> _selectedIds = {};
@@ -66,7 +70,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   }
 
   /// Localized distance: meters < 1000 show "123 م", otherwise "12.3 كم".
-  /// Uses Arabic‑Indic digits when locale is Arabic.
+  /// Uses Arabic-Indic digits when locale is Arabic.
   String _fmtDistance(BuildContext ctx, int meters) {
     final isAr = _isArabic(ctx);
     final mLabel =
@@ -128,10 +132,19 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
             }
           });
         }
+
         setState(() {
           _all = list;
+          _recomputeAvailableLines(); // NEW
+          // keep line selection valid if lines disappeared
+          _selectedLines.removeWhere((k) => !_availableLines.contains(k));
+          // if no line chips left selected, don't force metro mode
+          if (_selectedLines.isEmpty && _mode == 'metro') {
+            // leave mode unchanged; user may still want metro-only filter
+          }
           _applyFilterSort();
           _loading = false;
+
           // keep selection valid
           _selectedIds.removeWhere((id) => !_all.any((e) => e.id == id));
           if (_selectedIds.isEmpty) _selectionMode = false;
@@ -147,6 +160,24 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     _sub?.cancel();
     _searchCtrl.dispose();
     super.dispose();
+  }
+
+  // ---- NEW: compute the unique metro lines from user's trips ---------------
+  void _recomputeAvailableLines() {
+    _availableLines.clear();
+    for (final e in _all) {
+      final keys = e.metroLineKeys ?? const [];
+      for (final raw in keys) {
+        final k = _canonicalLine(raw);
+        if (k.isNotEmpty) _availableLines.add(k);
+      }
+    }
+  }
+
+  String _canonicalLine(String s) {
+    final t = (s).trim();
+    if (t.isEmpty) return '';
+    return t[0].toUpperCase() + t.substring(1).toLowerCase(); // Blue, Red...
   }
 
   // ---- Filtering / sorting --------------------------------------------------
@@ -174,6 +205,16 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
             fs.contains(q) ||
             ts.contains(q) ||
             lines.contains(q);
+      });
+    }
+
+    // NEW: Line filter (match ANY selected line). Only meaningful for metro trips.
+    if (_selectedLines.isNotEmpty) {
+      final want = _selectedLines.map(_canonicalLine).toSet();
+      it = it.where((e) {
+        if (e.mode != 'metro') return false;
+        final lines = (e.metroLineKeys ?? const []).map(_canonicalLine).toSet();
+        return lines.intersection(want).isNotEmpty;
       });
     }
 
@@ -216,6 +257,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
       _mode = 'all';
       _range = null;
       _sort = _Sort.recent;
+      _selectedLines.clear(); // NEW
       _applyFilterSort();
     });
   }
@@ -325,8 +367,9 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-              content:
-                  Text(tr('Deleted $count trip(s)', 'Deleted $count trip(s)'))),
+            content:
+                Text(tr('Deleted $count trip(s)', 'Deleted $count trip(s)')),
+          ),
         );
       }
       _exitSelection();
@@ -342,7 +385,6 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     final t = theme.textTheme;
 
     return Scaffold(
-      // Theme-aware background
       backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(
         title: _selectionMode
@@ -477,7 +519,7 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   Widget _filterRow(ThemeData theme) {
     final cs = theme.colorScheme;
 
-    Widget chip(String key, IconData icon, String label) => ChoiceChip(
+    Widget chipMode(String key, IconData icon, String label) => ChoiceChip(
           label: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -493,32 +535,117 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
           },
         );
 
+    // NEW: Metro line chip builder
+    Widget lineChip(String lineKey) {
+      final selected = _selectedLines.contains(lineKey);
+      final color = _lineColor(lineKey);
+      return FilterChip(
+        selected: selected,
+        label: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 10,
+              height: 10,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 6),
+            Text(lineKey),
+          ],
+        ),
+        onSelected: (v) {
+          setState(() {
+            if (v) {
+              _selectedLines.add(lineKey);
+              // Selecting a line implies metro trips
+              _mode = 'metro';
+            } else {
+              _selectedLines.remove(lineKey);
+            }
+            _applyFilterSort();
+          });
+        },
+      );
+    }
+
+    // "All lines" clear chip
+    Widget clearLinesChip() => OutlinedButton.icon(
+          onPressed: _selectedLines.isEmpty
+              ? null
+              : () {
+                  setState(() {
+                    _selectedLines.clear();
+                    _applyFilterSort();
+                  });
+                },
+          icon: const Icon(Icons.layers_clear_rounded, size: 18),
+          label: Text(tr('All lines', 'All lines')),
+          style: OutlinedButton.styleFrom(
+            foregroundColor: cs.onSurface,
+            side: BorderSide(color: cs.outline),
+            backgroundColor: theme.inputDecorationTheme.fillColor ?? cs.surface,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          ),
+        );
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        crossAxisAlignment: WrapCrossAlignment.center,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          chip('all', Icons.all_inclusive, tr('All', 'All')),
-          chip('car', Icons.directions_car_filled, tr('Car', 'Car')),
-          chip('metro', Icons.directions_subway_filled, tr('Metro', 'Metro')),
-          OutlinedButton.icon(
-            onPressed: _pickDateRange,
-            icon: const Icon(Icons.date_range_rounded, size: 18),
-            label: Text(
-              _range == null
-                  ? tr('filter.dates', 'Dates')
-                  : '${_shortLocalized(context, _range!.start)} – ${_shortLocalized(context, _range!.end)}',
-            ),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: cs.onSurface,
-              side: BorderSide(color: cs.outline),
-              backgroundColor:
-                  theme.inputDecorationTheme.fillColor ?? cs.surface,
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            ),
+          // Modes + Dates row
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              chipMode('all', Icons.all_inclusive, tr('All', 'All')),
+              chipMode('car', Icons.directions_car_filled, tr('Car', 'Car')),
+              chipMode('metro', Icons.directions_subway_filled,
+                  tr('Metro', 'Metro')),
+              OutlinedButton.icon(
+                onPressed: _pickDateRange,
+                icon: const Icon(Icons.date_range_rounded, size: 18),
+                label: Text(
+                  _range == null
+                      ? tr('filter.dates', 'Dates')
+                      : '${_shortLocalized(context, _range!.start)} – ${_shortLocalized(context, _range!.end)}',
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: cs.onSurface,
+                  side: BorderSide(color: cs.outline),
+                  backgroundColor:
+                      theme.inputDecorationTheme.fillColor ?? cs.surface,
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                ),
+              ),
+            ],
           ),
+
+          // NEW: Lines section – only shows if the user actually has metro lines in history
+          if (_availableLines.isNotEmpty) ...[
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 4.0),
+              child: Text(
+                tr('Lines', 'Lines'),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: FontWeight.w700,
+                  color: cs.onSurface.withOpacity(0.9),
+                ),
+              ),
+            ),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                // Ordered by name for stability
+                ...(_availableLines.toList()..sort()).map((k) => lineChip(k)),
+                clearLinesChip(),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -527,6 +654,14 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   // Active filters bar (Wrap, never overflows)
   Widget _activeFiltersBar(ThemeData theme) {
     final cs = theme.colorScheme;
+
+    String _linesLabel() {
+      if (_selectedLines.isEmpty) return '';
+      final list = _selectedLines.toList()..sort();
+      final joined = list.join(', ');
+      return '${tr("Lines", "Lines")}: $joined';
+    }
+
     return Padding(
       padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
       child: Wrap(
@@ -546,6 +681,8 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
               theme,
               '${_shortLocalized(context, _range!.start)}–${_shortLocalized(context, _range!.end)}',
             ),
+          // NEW: selected lines summary
+          if (_selectedLines.isNotEmpty) _pill(theme, _linesLabel()),
           TextButton.icon(
             onPressed: _clearAllFilters,
             icon: const Icon(Icons.filter_alt_off_rounded),
@@ -615,44 +752,6 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     }
   }
 
-  Widget _lineChip(ThemeData theme, String key) {
-    final cs = theme.colorScheme;
-    final label = getTranslated(
-        context, key[0].toUpperCase() + key.substring(1).toLowerCase());
-    final shown = (label.isEmpty || label.toLowerCase() == 'null')
-        ? (key.isNotEmpty
-            ? '${key[0].toUpperCase()}${key.substring(1).toLowerCase()}'
-            : key)
-        : label;
-
-    final c = _lineColor(key);
-    final isDark = theme.brightness == Brightness.dark;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: c.withOpacity(isDark ? 0.18 : 0.12),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: c.withOpacity(0.4)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 10,
-            height: 10,
-            decoration: BoxDecoration(color: c, shape: BoxShape.circle),
-          ),
-          const SizedBox(width: 6),
-          Text(
-            shown,
-            style: TextStyle(fontWeight: FontWeight.w700, color: cs.onSurface),
-          ),
-        ],
-      ),
-    );
-  }
-
   Widget _tripCard(ThemeData theme, TravelEntry e) {
     final cs = theme.colorScheme;
     final isCar = e.mode == 'car';
@@ -677,155 +776,137 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
         }
       },
       borderRadius: BorderRadius.circular(18),
-      child: Container(
-        decoration: BoxDecoration(
-          color: theme.cardColor, // adaptive
+      child: Card(
+        elevation: 2,
+        margin: EdgeInsets.zero,
+        clipBehavior: Clip.antiAlias,
+        color: theme.cardColor,
+        surfaceTintColor: theme.colorScheme.surfaceTint,
+        shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(18),
-          border: _selectionMode && selected
-              ? Border.all(color: cs.primary, width: 2)
-              : Border.all(color: cs.outline.withOpacity(0.0)),
-          boxShadow: [
-            // subtle shadow; keeps good contrast in dark by lowering opacity
-            BoxShadow(
-              blurRadius: 12,
-              color: cs.shadow.withOpacity(
-                  theme.brightness == Brightness.dark ? 0.25 : 0.08),
-              offset: const Offset(0, 4),
-            ),
-          ],
+          side: _selectionMode && selected
+              ? BorderSide(color: cs.primary, width: 2)
+              : BorderSide(color: cs.outline.withOpacity(0.0)),
         ),
-        padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                if (_selectionMode)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: Checkbox(
-                      value: selected,
-                      onChanged: (_) => _toggleSelect(e),
-                    ),
-                  ),
-                Container(
-                  width: 46,
-                  height: 46,
-                  decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      colors: [accent, accent.withOpacity(0.65)],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: const Icon(
-                    Icons
-                        .directions_transit_filled, // replaced dynamically below
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // Title
-                      Text(
-                        e.destLabel?.trim().isNotEmpty == true
-                            ? e.destLabel!.trim()
-                            : tr('Destination', 'Destination'),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w800,
-                          color: cs.onSurface,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      // Subline
-                      Text(
-                        '${e.originLabel?.trim().isNotEmpty == true ? e.originLabel!.trim() : tr("From my location", "From my location")} → ${e.destLabel?.trim().isNotEmpty == true ? e.destLabel!.trim() : tr("Destination", "Destination")}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: cs.onSurface.withOpacity(0.65),
-                        ),
-                      ),
-                      const SizedBox(height: 6),
-                      // Chips row
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 6,
-                        crossAxisAlignment: WrapCrossAlignment.center,
-                        children: [
-                          _chip(
-                            theme,
-                            icon: Icons.schedule,
-                            text: _fmtDurationLocalized(
-                                context, e.durationSeconds),
-                          ),
-                          _chip(
-                            theme,
-                            icon: Icons.pin_drop_outlined,
-                            text: _fmtDistance(context, e.distanceMeters),
-                          ),
-                          _chip(
-                            theme,
-                            icon: Icons.play_arrow_rounded,
-                            text: '${tr("Start", "Start")}: $startTime',
-                          ),
-                          _chip(
-                            theme,
-                            icon: Icons.stop_rounded,
-                            text: '${tr("End", "End")}: $endTime',
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 8),
-                if (!_selectionMode)
-                  Icon(Icons.chevron_right_rounded,
-                      color: cs.onSurface.withOpacity(0.38)),
-              ],
-            ),
-
-            // Replace the icon with the correct one (kept outside the Container to keep gradient)
-
-            // Lines used (metro only)
-            if (!isCar && lines.isNotEmpty) ...[
-              const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                crossAxisAlignment: WrapCrossAlignment.center,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
                 children: [
-                  Text(
-                    tr('Lines used', 'Lines used'),
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      color: cs.onSurface,
+                  if (_selectionMode)
+                    Padding(
+                      padding: const EdgeInsets.only(right: 8),
+                      child: Checkbox(
+                        value: selected,
+                        onChanged: (_) => _toggleSelect(e),
+                      ),
+                    ),
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: accent,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Icon(
+                      isCar
+                          ? Icons.directions_car_filled
+                          : Icons.directions_subway_filled,
+                      color: Colors.white,
                     ),
                   ),
-                  ...lines.map((k) => _lineChip(theme, k)),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Title
+                        Text(
+                          e.destLabel?.trim().isNotEmpty == true
+                              ? e.destLabel!.trim()
+                              : tr('Destination', 'Destination'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                            color: cs.onSurface,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        // Subline
+                        Text(
+                          '${e.originLabel?.trim().isNotEmpty == true ? e.originLabel!.trim() : tr("From my location", "From my location")} → ${e.destLabel?.trim().isNotEmpty == true ? e.destLabel!.trim() : tr("Destination", "Destination")}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: cs.onSurface.withOpacity(0.65),
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        // Chips row
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 6,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            _chip(
+                              theme,
+                              icon: Icons.schedule,
+                              text: _fmtDurationLocalized(
+                                  context, e.durationSeconds),
+                            ),
+                            _chip(
+                              theme,
+                              icon: Icons.pin_drop_outlined,
+                              text: _fmtDistance(context, e.distanceMeters),
+                            ),
+                            _chip(
+                              theme,
+                              icon: Icons.play_arrow_rounded,
+                              text: '${tr("Start", "Start")}: $startTime',
+                            ),
+                            _chip(
+                              theme,
+                              icon: Icons.stop_rounded,
+                              text: '${tr("End", "End")}: $endTime',
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  if (!_selectionMode)
+                    Icon(Icons.chevron_right_rounded,
+                        color: cs.onSurface.withOpacity(0.38)),
                 ],
               ),
-              if ((e.fromStation?.isNotEmpty ?? false) ||
-                  (e.toStation?.isNotEmpty ?? false)) ...[
-                const SizedBox(height: 6),
-                Text(
-                  '${tr("From", "From")}: ${e.fromStation ?? tr("Unknown", "Unknown")}  •  ${tr("To", "To")}: ${e.toStation ?? tr("Unknown", "Unknown")}',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: cs.onSurface.withOpacity(0.65),
-                  ),
+
+              // Lines used (metro only)
+              if (!isCar && lines.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                LinesUsedSection(
+                  keys: lines,
+                  title: tr('Lines used', 'Lines used'),
+                  colorFor: _lineColor,
                 ),
+                if ((e.fromStation?.isNotEmpty ?? false) ||
+                    (e.toStation?.isNotEmpty ?? false)) ...[
+                  const SizedBox(height: 6),
+                  Text(
+                    '${tr("From", "From")}: ${e.fromStation ?? tr("Unknown", "Unknown")}  •  ${tr("To", "To")}: ${e.toStation ?? tr("Unknown", "Unknown")}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: cs.onSurface.withOpacity(0.65),
+                    ),
+                  ),
+                ],
               ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -837,9 +918,9 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
       decoration: BoxDecoration(
-        color: cs.surfaceVariant,
+        color: cs.surfaceVariant.withOpacity(0.6),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: cs.outline),
+        border: Border.all(color: cs.outline.withOpacity(0.5)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1084,42 +1165,6 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
     }
   }
 
-  Widget _lineChip(ThemeData theme, String key) {
-    final cs = theme.colorScheme;
-    final translated = getTranslated(
-        context, key[0].toUpperCase() + key.substring(1).toLowerCase());
-    final text = (translated.isEmpty || translated.toLowerCase() == 'null')
-        ? (key.isNotEmpty
-            ? '${key[0].toUpperCase()}${key.substring(1).toLowerCase()}'
-            : key)
-        : translated;
-
-    final c = _lineColor(key);
-    final isDark = theme.brightness == Brightness.dark;
-
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: c.withOpacity(isDark ? 0.18 : 0.12),
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: c.withOpacity(0.4)),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
-          const SizedBox(width: 6),
-          Text(text,
-              style: theme.textTheme.bodyMedium
-                  ?.copyWith(fontWeight: FontWeight.w700, color: cs.onSurface)),
-        ],
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -1157,22 +1202,12 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
                 ),
                 const SizedBox(height: 12),
 
-                // Lines used (metro only)
+                // Lines used (metro only) – NEW responsive section
                 if (e.mode == 'metro' && lines.isNotEmpty) ...[
-                  Align(
-                    alignment: AlignmentDirectional.centerStart,
-                    child: Wrap(
-                      spacing: 10,
-                      runSpacing: 10,
-                      children: [
-                        Text(getTranslated(context, 'Lines used'),
-                            style: theme.textTheme.bodyMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: cs.onSurface,
-                            )),
-                        ...lines.map((k) => _lineChip(theme, k)),
-                      ],
-                    ),
+                  LinesUsedSection(
+                    keys: lines,
+                    title: getTranslated(context, 'Lines used'),
+                    colorFor: _lineColor,
                   ),
                   const SizedBox(height: 10),
                 ],
@@ -1442,6 +1477,123 @@ class TravelEntry {
       metroLineKeys: _readLines(m['metroLineKeys']),
       fromStation: (m['fromStation'] ?? m['from_station'] ?? '') as String?,
       toStation: (m['toStation'] ?? m['to_station'] ?? '') as String?,
+    );
+  }
+}
+
+// ===== Reusable responsive widgets for "Lines used" ==========================
+
+class LineCapsule extends StatelessWidget {
+  final String label; // "Blue", "Orange", ...
+  final Color color;
+  final bool dense; // compact mode for narrow screens
+
+  const LineCapsule({
+    super.key,
+    required this.label,
+    required this.color,
+    this.dense = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+
+    // Compact sizes for very small screens
+    final double padH = dense ? 8 : 10;
+    final double padV = dense ? 5 : 6;
+    final double dot = dense ? 8 : 10;
+    final double font = dense ? 12.5 : 13.5;
+
+    return Semantics(
+      label: label,
+      child: Container(
+        padding: EdgeInsets.symmetric(horizontal: padH, vertical: padV),
+        decoration: BoxDecoration(
+          color: color.withOpacity(isDark ? 0.18 : 0.12),
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(color: color.withOpacity(0.45), width: 0.7),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: dot,
+              height: dot,
+              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontWeight: FontWeight.w700,
+                fontSize: font,
+                color: cs.onSurface,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class LinesUsedSection extends StatelessWidget {
+  final List<String> keys; // e.g. ["Blue","Orange","Purple"]
+  final Color Function(String) colorFor;
+  final String title;
+
+  const LinesUsedSection({
+    super.key,
+    required this.keys,
+    required this.colorFor,
+    required this.title,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (keys.isEmpty) return const SizedBox.shrink();
+
+    return LayoutBuilder(
+      builder: (ctx, cons) {
+        // Compact pills on very narrow screens, normal on the rest
+        final compact = cons.maxWidth < 360;
+
+        final theme = Theme.of(context);
+        final cs = theme.colorScheme;
+
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              title,
+              style: theme.textTheme.bodyMedium?.copyWith(
+                fontWeight: FontWeight.w700,
+                color: cs.onSurface,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: keys.map((k) {
+                final pretty = k.isNotEmpty
+                    ? '${k[0].toUpperCase()}${k.substring(1).toLowerCase()}'
+                    : k;
+                return LineCapsule(
+                  label: pretty,
+                  color: colorFor(k),
+                  dense: compact,
+                );
+              }).toList(),
+            ),
+          ],
+        );
+      },
     );
   }
 }

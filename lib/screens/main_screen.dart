@@ -1560,7 +1560,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
               _notifyOnce(
                 'lastmile_drive_${finalSt.id}',
-                '${getTranslated(context, "Drive to destination from")} ${finalSt.name}',
+                '${getTranslated(context, "Drive/walk to destination from")} ${finalSt.name}',
                 type: NavHintType.walk,
               );
             }

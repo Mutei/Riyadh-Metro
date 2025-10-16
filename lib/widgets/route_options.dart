@@ -1,9 +1,11 @@
+// lib/widgets/route_options_sheet.dart
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart' show LatLng;
 
 import '../classes/route_option.dart';
 import '../localization/language_constants.dart';
+import '../constants/colors.dart'; // <-- NEW: for AppColors.kDarkBackgroundColor
 import 'all_metro_lines.dart';
 
 class RouteOptionsSheet extends StatelessWidget {
@@ -20,7 +22,6 @@ class RouteOptionsSheet extends StatelessWidget {
     required this.onPick,
   });
 
-  // -------- helpers --------
   String _fmtDur(double s) {
     final d = Duration(seconds: s.round());
     final h = d.inHours;
@@ -28,9 +29,8 @@ class RouteOptionsSheet extends StatelessWidget {
     return h > 0 ? '${h}h ${m}m' : '${m}m';
   }
 
-  // Haversine great-circle distance (meters)
   double _distMeters(LatLng a, LatLng b) {
-    const R = 6371000.0; // meters
+    const R = 6371000.0;
     final dLat = _deg2rad(b.latitude - a.latitude);
     final dLng = _deg2rad(b.longitude - a.longitude);
     final la1 = _deg2rad(a.latitude);
@@ -44,15 +44,15 @@ class RouteOptionsSheet extends StatelessWidget {
   double _deg2rad(double d) => d * math.pi / 180.0;
 
   int _desiredCountByDistanceMeters(double meters) {
-    if (meters < 4000) return 3; // < 4 km → 3 routes
-    if (meters < 9000) return 4; // 4–9 km → 4 routes
-    return 5; // >= 9 km → 5 routes
+    if (meters < 4000) return 3;
+    if (meters < 9000) return 4;
+    return 5;
   }
 
   Widget _lineChip(BuildContext context, String key) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
-    final c = metroLineColors[key] ?? cs.secondary; // fallback if not found
+    final c = metroLineColors[key] ?? cs.secondary;
     final bool isDark = theme.brightness == Brightness.dark;
 
     return Container(
@@ -80,18 +80,20 @@ class RouteOptionsSheet extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
+    final bool isDark = theme.brightness == Brightness.dark;
 
     final onSurface = cs.onSurface;
     final onSurfaceSubtle = onSurface.withOpacity(0.65);
     final outline = cs.outline;
     final outlineVariant = cs.outlineVariant;
-    final bgColor = theme.dialogBackgroundColor; // ✅ theme-aware background
 
-    // Guard: no options
+    // ✅ Use your custom dark background; keep Material surface in light mode
+    final bgColor = isDark ? AppColors.kDarkBackgroundColor : cs.surface;
+
     if (options.isEmpty) {
       return SafeArea(
         child: Container(
-          color: bgColor, // ✅ apply background
+          color: bgColor,
           padding: const EdgeInsets.all(16),
           child: Text(
             getTranslated(context, 'No routes found'),
@@ -102,7 +104,6 @@ class RouteOptionsSheet extends StatelessWidget {
       );
     }
 
-    // Decide how many routes to show based on distance
     final origin = options.first.originLL;
     final dest = options.first.destLL;
     final meters = _distMeters(origin, dest);
@@ -111,13 +112,12 @@ class RouteOptionsSheet extends StatelessWidget {
 
     return SafeArea(
       child: Container(
-        color: bgColor, // ✅ apply background
+        color: bgColor,
         padding: const EdgeInsets.only(bottom: 10),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 12),
-            // drag handle
             Container(
               width: 42,
               height: 4,
@@ -152,14 +152,13 @@ class RouteOptionsSheet extends StatelessWidget {
                   final eta = DateTime.now().add(
                     Duration(seconds: r.totalSeconds.round()),
                   );
-                  final bool isDark = theme.brightness == Brightness.dark;
 
                   return ListTile(
+                    tileColor: Colors.transparent, // keep sheet bg visible
                     contentPadding:
                         const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     title: Row(
                       children: [
-                        // duration badge (primary-tinted)
                         Container(
                           padding: const EdgeInsets.symmetric(
                               horizontal: 10, vertical: 6),
@@ -193,12 +192,12 @@ class RouteOptionsSheet extends StatelessWidget {
                         runSpacing: 6,
                         crossAxisAlignment: WrapCrossAlignment.center,
                         children: [
-                          // walk chip
                           Container(
                             padding: const EdgeInsets.symmetric(
                                 horizontal: 8, vertical: 4),
                             decoration: BoxDecoration(
-                              color: cs.surfaceVariant,
+                              color:
+                                  isDark ? Colors.white10 : cs.surfaceVariant,
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(color: outline),
                             ),
@@ -217,15 +216,14 @@ class RouteOptionsSheet extends StatelessWidget {
                               ],
                             ),
                           ),
-                          // line chips
                           ...r.lineSequence.map((k) => _lineChip(context, k)),
-                          // transfers chip (only when > 0)
                           if (r.transfers > 0)
                             Container(
                               padding: const EdgeInsets.symmetric(
                                   horizontal: 8, vertical: 4),
                               decoration: BoxDecoration(
-                                color: cs.surfaceVariant,
+                                color:
+                                    isDark ? Colors.white10 : cs.surfaceVariant,
                                 borderRadius: BorderRadius.circular(12),
                                 border: Border.all(color: outline),
                               ),

@@ -439,6 +439,15 @@
       "Then board": "Then board",
 
       "Board at": "Board at",
-      "Line": "Line"
+      "Line": "Line",
+      "Drive/walk to destination from": "Drive/walk to destination from",
+      "Typical time (this pair)": "Typical time (this pair)",
+      "Avg": "Avg",
+      "Min": "Min",
+      "Max": "Max",
+      "Samples": "Samples",
+      "No aggregated data yet": "No aggregated data yet",
 
+      "Typical": "Typical",
+      "This trip: stop-to-stop": "This trip: stop-to-stop"
   }

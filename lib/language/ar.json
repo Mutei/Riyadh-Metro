@@ -438,6 +438,14 @@
   "Head to": "اتجه إلى",
   "Then board": "ثم اصعد",
   "Board at": "اصعد في",
-  "Line": "الخط"
-
+  "Line": "الخط",
+  "Drive/walk to destination from": "اتجه بالسيارة أو سيرًا إلى الوجهة من",
+  "Typical time (this pair)": "الوقت المعتاد لهذه الرحلة",
+  "Avg": "المتوسط",
+  "Min": "الأدنى",
+  "Max": "الأعلى",
+  "Samples": "عدد الرحلات",
+  "No aggregated data yet": "لا توجد بيانات مجمعة بعد",
+  "Typical": "اعتيادي",
+  "This trip: stop-to-stop": "هذه الرحلة: من محطة لأخرى"
 }

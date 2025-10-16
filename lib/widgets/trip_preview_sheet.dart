@@ -1,6 +1,8 @@
+// lib/widgets/trip_preview_sheet.dart
 import 'package:flutter/material.dart';
 import '../widgets/main_screen_widgets/mode_icon.dart';
 import '../localization/language_constants.dart';
+import '../constants/colors.dart'; // <-- for AppColors.kDarkBackgroundColor
 
 class TripPreviewSheet extends StatelessWidget {
   final String title;
@@ -25,20 +27,32 @@ class TripPreviewSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+
+    final bgColor = isDark ? AppColors.kDarkBackgroundColor : cs.surface;
+    final onSurface = cs.onSurface;
+    final onSurfaceSubtle = onSurface.withOpacity(0.65);
+    final hairline = cs.outlineVariant;
+
     return SafeArea(
       top: false,
-      child: Padding(
+      child: Container(
+        color: bgColor, // ✅ dark-mode aware background
         padding: const EdgeInsets.only(bottom: 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             const SizedBox(height: 10),
             Container(
-                width: 44,
-                height: 5,
-                decoration: BoxDecoration(
-                    color: Colors.black12,
-                    borderRadius: BorderRadius.circular(100))),
+              width: 44,
+              height: 5,
+              decoration: BoxDecoration(
+                color: onSurface.withOpacity(0.24), // drag handle
+                borderRadius: BorderRadius.circular(100),
+              ),
+            ),
             const SizedBox(height: 14),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -46,14 +60,19 @@ class TripPreviewSheet extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Expanded(
-                    child: Text(title,
-                        textAlign: TextAlign.start,
-                        style: const TextStyle(
-                            fontSize: 20, fontWeight: FontWeight.w800)),
+                    child: Text(
+                      title,
+                      textAlign: TextAlign.start,
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: onSurface,
+                      ),
+                    ),
                   ),
                   IconButton(
-                      onPressed: () {},
-                      icon: const Icon(Icons.more_vert_rounded)),
+                    onPressed: () {},
+                    icon: Icon(Icons.more_vert_rounded, color: onSurface),
+                  ),
                 ],
               ),
             ),
@@ -61,9 +80,13 @@ class TripPreviewSheet extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Align(
                 alignment: Alignment.centerLeft,
-                child: Text(fromLabel,
-                    style: const TextStyle(
-                        color: Colors.black54, fontSize: 12.5, height: 1.2)),
+                child: Text(
+                  fromLabel,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: onSurfaceSubtle,
+                    height: 1.2,
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: 10),
@@ -75,13 +98,20 @@ class TripPreviewSheet extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(getTranslated(context, 'Start'),
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.black45)),
+                        Text(
+                          getTranslated(context, 'Start'),
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: onSurfaceSubtle,
+                          ),
+                        ),
                         const SizedBox(height: 4),
-                        Text(_fmtTime(context, start),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w700)),
+                        Text(
+                          _fmtTime(context, start),
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: onSurface,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -89,13 +119,20 @@ class TripPreviewSheet extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.end,
                       children: [
-                        Text(getTranslated(context, 'Arrival'),
-                            style: const TextStyle(
-                                fontSize: 12, color: Colors.black45)),
+                        Text(
+                          getTranslated(context, 'Arrival'),
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: onSurfaceSubtle,
+                          ),
+                        ),
                         const SizedBox(height: 4),
-                        Text(_fmtTime(context, arrival),
-                            style: const TextStyle(
-                                fontSize: 14, fontWeight: FontWeight.w700)),
+                        Text(
+                          _fmtTime(context, arrival),
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: onSurface,
+                          ),
+                        ),
                       ],
                     ),
                   ),
@@ -110,27 +147,30 @@ class TripPreviewSheet extends StatelessWidget {
                 scrollDirection: Axis.horizontal,
                 itemBuilder: (_, i) {
                   final m = modeIcons[i];
-                  final bg = m.chipColor?.withOpacity(0.15) ??
-                      Colors.black.withOpacity(0.06);
+                  final chipBorderColor =
+                      (m.chipColor ?? onSurface).withOpacity(0.30);
+                  final chipBg = m.chipColor != null
+                      ? m.chipColor!.withOpacity(isDark ? 0.18 : 0.12)
+                      : (isDark ? Colors.white10 : cs.surfaceVariant);
+
                   return Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10),
                     decoration: BoxDecoration(
-                      color: bg,
+                      color: chipBg,
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                          color: (m.chipColor ?? Colors.black12)
-                              .withOpacity(0.30)),
+                      border: Border.all(color: chipBorderColor),
                     ),
                     child: Row(
                       children: [
-                        Icon(m.icon, size: 18, color: m.chipColor),
+                        Icon(m.icon, size: 18, color: m.chipColor ?? onSurface),
                         const SizedBox(width: 6),
-                        Text(m.label,
-                            style: const TextStyle(
-                              fontSize: 12.5,
-                              fontWeight: FontWeight.w700,
-                              color: Colors.black87,
-                            )),
+                        Text(
+                          m.label,
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: onSurface,
+                          ),
+                        ),
                       ],
                     ),
                   );
@@ -153,9 +193,20 @@ class TripPreviewSheet extends StatelessWidget {
                         ? Icons.flag_rounded
                         : Icons.directions_subway_filled);
                 return ListTile(
-                    dense: true, leading: Icon(icon), title: Text(steps[i]));
+                  dense: true,
+                  iconColor: onSurface,
+                  textColor: onSurface,
+                  tileColor: Colors.transparent, // keep sheet bg visible
+                  leading: Icon(icon),
+                  title: Text(
+                    steps[i],
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: onSurface,
+                    ),
+                  ),
+                );
               },
-              separatorBuilder: (_, __) => const Divider(height: 1),
+              separatorBuilder: (_, __) => Divider(height: 1, color: hairline),
               itemCount: steps.length,
             ),
             const SizedBox(height: 8),

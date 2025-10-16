@@ -282,17 +282,24 @@ class _TicketScreenState extends State<TicketScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
     return Scaffold(
-      backgroundColor: AppColors.kBackGroundColor,
+      backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(
-        backgroundColor: AppColors.kBackGroundColor,
+        backgroundColor: theme.scaffoldBackgroundColor,
         elevation: 0,
         centerTitle: false,
         title: Text(
           getTranslated(context, 'Tickets'),
           maxLines: 1,
           overflow: TextOverflow.ellipsis,
-          style: const TextStyle(fontSize: 26, fontWeight: FontWeight.w800),
+          style: TextStyle(
+            fontSize: 26,
+            fontWeight: FontWeight.w800,
+            color: cs.onSurface,
+          ),
         ),
       ),
       body: Column(
@@ -340,13 +347,23 @@ class _TicketScreenState extends State<TicketScreen> {
   }
 
   Widget _ticketCard(TicketProduct p) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     final isFirst = p.klass == TicketClass.firstClass;
 
-    final Color cardBg = isFirst ? const Color(0xFFBFA574) : Colors.white;
-    final Color border = isFirst ? Colors.transparent : Colors.black12;
-    final Color labelBg =
-        isFirst ? const Color(0xFF8F7A4E) : const Color(0xFFE6E8DC);
-    final Color labelFg = isFirst ? Colors.white : Colors.black87;
+    // First-class gold palette that adapts to dark mode
+    final Color goldCard =
+        isDark ? const Color(0xFF3D3423) : const Color(0xFFBFA574);
+    final Color goldChip =
+        isDark ? const Color(0xFF5A4B2F) : const Color(0xFF8F7A4E);
+    final Color goldText = Colors.white;
+
+    final Color cardBg = isFirst ? goldCard : cs.surface;
+    final Color border =
+        isFirst ? Colors.transparent : cs.outlineVariant.withOpacity(.7);
+    final Color labelBg = isFirst ? goldChip : cs.surfaceVariant;
+    final Color labelFg = isFirst ? goldText : cs.onSurface;
 
     final bool selected = _selected.contains(p.id);
     final bool expanded = _expanded.contains(p.id);
@@ -359,11 +376,12 @@ class _TicketScreenState extends State<TicketScreen> {
         borderRadius: BorderRadius.circular(18),
         border: Border.all(color: border),
         boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(.04),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
+          if (!isDark)
+            BoxShadow(
+              color: Colors.black.withOpacity(.04),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
         ],
       ),
       child: Column(
@@ -424,7 +442,7 @@ class _TicketScreenState extends State<TicketScreen> {
                   shape: RoundedRectangleBorder(
                       borderRadius: BorderRadius.circular(6)),
                   side: BorderSide(
-                      color: Colors.black.withOpacity(.5), width: 1.6),
+                      color: cs.onSurface.withOpacity(.45), width: 1.6),
                   activeColor: AppColors.kPrimaryColor,
                 ),
               ),
@@ -438,7 +456,7 @@ class _TicketScreenState extends State<TicketScreen> {
             style: TextStyle(
               fontSize: 18,
               fontWeight: FontWeight.w800,
-              color: isFirst ? Colors.white : Colors.black,
+              color: isFirst ? goldText : cs.onSurface,
             ),
           ),
           const SizedBox(height: 8),
@@ -451,7 +469,7 @@ class _TicketScreenState extends State<TicketScreen> {
                 style: TextStyle(
                   fontSize: 30,
                   fontWeight: FontWeight.w900,
-                  color: isFirst ? Colors.white : AppColors.kPrimaryColor,
+                  color: isFirst ? goldText : AppColors.kPrimaryColor,
                   height: 1.0,
                 ),
               ),
@@ -462,7 +480,9 @@ class _TicketScreenState extends State<TicketScreen> {
             getTranslated(context, p.description),
             softWrap: true,
             style: TextStyle(
-              color: isFirst ? Colors.white.withOpacity(.9) : Colors.black87,
+              color: isFirst
+                  ? goldText.withOpacity(.9)
+                  : cs.onSurface.withOpacity(.85),
               height: 1.3,
             ),
           ),
@@ -485,7 +505,7 @@ class _TicketScreenState extends State<TicketScreen> {
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
                     fontWeight: FontWeight.w700,
-                    color: isFirst ? Colors.white : Colors.black,
+                    color: isFirst ? goldText : cs.onSurface,
                   ),
                 ),
                 const SizedBox(width: 6),
@@ -494,21 +514,22 @@ class _TicketScreenState extends State<TicketScreen> {
                       ? Icons.keyboard_arrow_up_rounded
                       : Icons.keyboard_arrow_down_rounded,
                   size: 22,
-                  color: isFirst ? Colors.white : Colors.black,
+                  color: isFirst ? goldText : cs.onSurface,
                 ),
               ],
             ),
           ),
           if (expanded) ...[
             const SizedBox(height: 8),
-            Divider(color: isFirst ? Colors.white54 : Colors.black12),
+            Divider(color: cs.outline.withOpacity(isFirst ? .35 : .24)),
             const SizedBox(height: 8),
             Text(
               '${getTranslated(context, '• Unlimited rides within the validity period')}\n'
               '${getTranslated(context, '• Activate from your “My Tickets” tab')}\n'
               '${getTranslated(context, '• Non-refundable after activation')}',
               softWrap: true,
-              style: const TextStyle(height: 1.3),
+              style: TextStyle(
+                  height: 1.3, color: isFirst ? goldText : cs.onSurface),
             ),
           ],
         ],
@@ -529,9 +550,17 @@ class _TicketScreenState extends State<TicketScreen> {
       return;
     }
 
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
     final bool? ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        backgroundColor: theme.dialogBackgroundColor,
+        titleTextStyle: theme.textTheme.titleLarge
+            ?.copyWith(color: cs.onSurface, fontWeight: FontWeight.w800),
+        contentTextStyle: theme.textTheme.bodyMedium
+            ?.copyWith(color: cs.onSurface.withOpacity(.9)),
         title: Text(getTranslated(context, 'Buy ticket?')),
         content: Text(
           '${getTranslated(context, 'Purchase')} “${getTranslated(context, p.title)}” '
@@ -663,27 +692,32 @@ class _TicketScreenState extends State<TicketScreen> {
   }
 
   Widget _myTicketsPlaceholder() {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 28),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.confirmation_number_outlined,
-                size: 56, color: Colors.black26),
+            Icon(Icons.confirmation_number_outlined,
+                size: 56, color: cs.onSurface.withOpacity(.26)),
             const SizedBox(height: 12),
             Text(
               getTranslated(context, 'No active tickets'),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 18),
+              style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 18,
+                  color: cs.onSurface),
             ),
             const SizedBox(height: 6),
             Text(
               getTranslated(
                   context, 'When you purchase a ticket it will appear here.'),
               textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.black54),
+              style: TextStyle(color: cs.onSurface.withOpacity(.7)),
             ),
           ],
         ),
@@ -692,23 +726,26 @@ class _TicketScreenState extends State<TicketScreen> {
   }
 
   Widget _unknownTicketCard(TicketRecord r) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
+        color: theme.inputDecorationTheme.fillColor ?? cs.surface,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: Colors.black12),
+        border: Border.all(color: cs.outlineVariant),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Icon(Icons.report_problem_rounded, color: Colors.orange),
+          Icon(Icons.report_problem_rounded, color: Colors.orange.shade400),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               '${getTranslated(context, 'Unknown ticket (product:)')} ${r.productId}',
               softWrap: true,
-              style: const TextStyle(fontWeight: FontWeight.w700),
+              style:
+                  TextStyle(fontWeight: FontWeight.w700, color: cs.onSurface),
             ),
           ),
         ],
@@ -717,20 +754,31 @@ class _TicketScreenState extends State<TicketScreen> {
   }
 
   Widget _errorRow(String msg) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final bg = theme.brightness == Brightness.dark
+        ? const Color(0xFF3A1F1F)
+        : const Color(0xFFFFF2F2);
+    final border = theme.brightness == Brightness.dark
+        ? const Color(0xFF6B2A2A)
+        : const Color(0xFFFFD6D6);
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF2F2),
+        color: bg,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: const Color(0xFFFFD6D6)),
+        border: Border.all(color: border),
       ),
       child: Row(
         children: [
           const Icon(Icons.error_outline, color: Colors.red),
           const SizedBox(width: 10),
           Expanded(
-            child: Text(msg,
-                softWrap: true, style: const TextStyle(color: Colors.red)),
+            child: Text(
+              msg,
+              softWrap: true,
+              style: const TextStyle(color: Colors.red),
+            ),
           ),
         ],
       ),
@@ -738,11 +786,20 @@ class _TicketScreenState extends State<TicketScreen> {
   }
 
   Widget _myTicketCard(TicketProduct p, TicketRecord r) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
     final isFirst = p.klass == TicketClass.firstClass;
-    final cardBg = isFirst ? const Color(0xFFBFA574) : Colors.white;
-    final border = isFirst ? Colors.transparent : Colors.black12;
-    final labelBg = isFirst ? const Color(0xFF8F7A4E) : const Color(0xFFE6E8DC);
-    final labelFg = isFirst ? Colors.white : Colors.black87;
+
+    final goldCard = isDark ? const Color(0xFF3D3423) : const Color(0xFFBFA574);
+    final goldChip = isDark ? const Color(0xFF5A4B2F) : const Color(0xFF8F7A4E);
+    final goldText = Colors.white;
+
+    final cardBg = isFirst ? goldCard : cs.surface;
+    final border =
+        isFirst ? Colors.transparent : cs.outlineVariant.withOpacity(.7);
+    final labelBg = isFirst ? goldChip : cs.surfaceVariant;
+    final labelFg = isFirst ? goldText : cs.onSurface;
 
     final purchasedStr = r.purchasedAtStr ?? getTranslated(context, 'Unknown');
     final bool activeNow = _isCurrentlyActive(r);
@@ -837,7 +894,7 @@ class _TicketScreenState extends State<TicketScreen> {
               style: TextStyle(
                 fontSize: 18,
                 fontWeight: FontWeight.w800,
-                color: isFirst ? Colors.white : Colors.black,
+                color: isFirst ? goldText : cs.onSurface,
               ),
             ),
             const SizedBox(height: 6),
@@ -846,7 +903,7 @@ class _TicketScreenState extends State<TicketScreen> {
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(
-                color: isFirst ? Colors.white70 : Colors.black54,
+                color: cs.onSurface.withOpacity(.7),
                 fontSize: 12,
               ),
             ),
@@ -857,7 +914,7 @@ class _TicketScreenState extends State<TicketScreen> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: isFirst ? Colors.white70 : Colors.black54,
+                  color: cs.onSurface.withOpacity(.7),
                   fontSize: 12,
                 ),
               ),
@@ -866,7 +923,7 @@ class _TicketScreenState extends State<TicketScreen> {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: TextStyle(
-                  color: isFirst ? Colors.white70 : Colors.black54,
+                  color: cs.onSurface.withOpacity(.7),
                   fontSize: 12,
                 ),
               ),
@@ -895,8 +952,8 @@ class _TicketScreenState extends State<TicketScreen> {
                     label: Text(getTranslated(context, 'Show QR')),
                     style: ElevatedButton.styleFrom(
                       backgroundColor:
-                          isFirst ? Colors.black.withOpacity(.2) : Colors.black,
-                      foregroundColor: Colors.white,
+                          isFirst ? Colors.black.withOpacity(.2) : cs.primary,
+                      foregroundColor: isFirst ? Colors.white : cs.onPrimary,
                       minimumSize: const Size(0, 36),
                       padding: const EdgeInsets.symmetric(horizontal: 12),
                     ),
@@ -916,17 +973,25 @@ class _TicketScreenState extends State<TicketScreen> {
   }
 
   Widget _inlineQrStrip(TicketRecord r, TicketProduct p, bool isFirst) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final payload = _qrPayload(r, p);
     final remainStr = _remainingText(r);
+
+    final bg = isFirst
+        ? (theme.brightness == Brightness.dark
+            ? Colors.white.withOpacity(.08)
+            : Colors.white.withOpacity(.15))
+        : cs.surfaceVariant;
+
     return GestureDetector(
       onTap: () => _showQrLarge(r, p),
       child: Container(
         padding: const EdgeInsets.all(10),
         decoration: BoxDecoration(
-          color:
-              isFirst ? Colors.white.withOpacity(.15) : const Color(0xFFF6F7F3),
+          color: bg,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: isFirst ? Colors.white30 : Colors.black12),
+          border: Border.all(color: cs.outlineVariant),
         ),
         child: Row(
           children: [
@@ -955,14 +1020,14 @@ class _TicketScreenState extends State<TicketScreen> {
                   Text(getTranslated(context, 'Metro entry QR'),
                       style: TextStyle(
                         fontWeight: FontWeight.w800,
-                        color: isFirst ? Colors.white : Colors.black87,
+                        color: cs.onSurface,
                       )),
                   const SizedBox(height: 2),
                   Text(
                     getTranslated(context, 'Tap to enlarge for gate scan'),
                     style: TextStyle(
                       fontSize: 12,
-                      color: isFirst ? Colors.white70 : Colors.black54,
+                      color: cs.onSurface.withOpacity(.7),
                     ),
                   ),
                   if (remainStr != null) ...[
@@ -972,14 +1037,14 @@ class _TicketScreenState extends State<TicketScreen> {
                       style: TextStyle(
                         fontSize: 12,
                         fontFeatures: const [FontFeature.tabularFigures()],
-                        color: isFirst ? Colors.white70 : Colors.black54,
+                        color: cs.onSurface.withOpacity(.7),
                       ),
                     ),
                   ],
                 ],
               ),
             ),
-            const Icon(Icons.open_in_full_rounded, size: 20),
+            Icon(Icons.open_in_full_rounded, size: 20, color: cs.onSurface),
           ],
         ),
       ),
@@ -1000,12 +1065,14 @@ class _TicketScreenState extends State<TicketScreen> {
   }
 
   void _showQrLarge(TicketRecord r, TicketProduct p) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
     final payload = _qrPayload(r, p);
     showDialog(
       context: context,
       barrierDismissible: true,
       builder: (ctx) => Dialog(
-        backgroundColor: Colors.white,
+        backgroundColor: theme.dialogBackgroundColor,
         insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 24),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
         child: Padding(
@@ -1014,20 +1081,30 @@ class _TicketScreenState extends State<TicketScreen> {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(getTranslated(context, 'Scan at metro gate'),
-                  style: const TextStyle(
-                      fontSize: 18, fontWeight: FontWeight.w800)),
+                  style: theme.textTheme.titleMedium?.copyWith(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: cs.onSurface)),
               const SizedBox(height: 10),
-              QrImageView(
-                data: payload,
-                version: QrVersions.auto,
-                size: 260,
-                gapless: true,
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: theme.cardColor,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: cs.outlineVariant),
+                ),
+                child: QrImageView(
+                  data: payload,
+                  version: QrVersions.auto,
+                  size: 260,
+                  gapless: true,
+                ),
               ),
               const SizedBox(height: 8),
               Text(
                 getTranslated(context, p.title),
-                style:
-                    const TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+                style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w700, color: cs.onSurface),
                 textAlign: TextAlign.center,
               ),
               const SizedBox(height: 4),
@@ -1035,21 +1112,24 @@ class _TicketScreenState extends State<TicketScreen> {
                 r.expiresAtStr != null
                     ? '${getTranslated(context, 'Expires:')} ${r.expiresAtStr}'
                     : '',
-                style: const TextStyle(fontSize: 12, color: Colors.black54),
+                style: theme.textTheme.bodySmall
+                    ?.copyWith(color: cs.onSurface.withOpacity(.7)),
               ),
               const SizedBox(height: 6),
               const Divider(height: 1),
               const SizedBox(height: 6),
               Row(
                 children: [
-                  const Icon(Icons.brightness_high_rounded, size: 18),
+                  Icon(Icons.brightness_high_rounded,
+                      size: 18, color: cs.onSurface),
                   const SizedBox(width: 6),
                   Expanded(
                     child: Text(
                       getTranslated(context,
                           'Increase screen brightness for faster scanning.'),
-                      style:
-                          const TextStyle(fontSize: 12, color: Colors.black54),
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: cs.onSurface.withOpacity(.7),
+                      ),
                     ),
                   ),
                 ],
@@ -1082,9 +1162,17 @@ class _TicketScreenState extends State<TicketScreen> {
   }
 
   Future<void> _promptActivate(TicketRecord r, TicketProduct p) async {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+
     final bool? ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => AlertDialog(
+        backgroundColor: theme.dialogBackgroundColor,
+        titleTextStyle: theme.textTheme.titleLarge
+            ?.copyWith(color: cs.onSurface, fontWeight: FontWeight.w800),
+        contentTextStyle: theme.textTheme.bodyMedium
+            ?.copyWith(color: cs.onSurface.withOpacity(.9)),
         title: Text(getTranslated(context, 'Activate ticket?')),
         content: Text(getTranslated(context,
             'Are you sure you want to activate your ticket? Activation starts the validity period.')),
@@ -1154,12 +1242,16 @@ class _PillTabs extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final bg = const Color(0xFFEAF0E4); // soft grey-green
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final bg = cs.surfaceVariant;
+
     return Container(
       height: 56,
       decoration: BoxDecoration(
         color: bg,
         borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: cs.outlineVariant),
       ),
       padding: const EdgeInsets.all(6),
       child: Row(
@@ -1187,6 +1279,7 @@ class _PillTabs extends StatelessWidget {
     required bool selected,
     required VoidCallback onTap,
   }) {
+    final cs = Theme.of(context).colorScheme;
     return Expanded(
       child: InkWell(
         borderRadius: BorderRadius.circular(24),
@@ -1195,12 +1288,12 @@ class _PillTabs extends StatelessWidget {
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeInOut,
           decoration: BoxDecoration(
-            color: selected ? AppColors.kPrimaryColor : Colors.transparent,
+            color: selected ? cs.primary : Colors.transparent,
             borderRadius: BorderRadius.circular(24),
             boxShadow: selected
                 ? [
                     BoxShadow(
-                      color: AppColors.kPrimaryColor.withOpacity(.35),
+                      color: cs.primary.withOpacity(.35),
                       blurRadius: 10,
                       offset: const Offset(0, 4),
                     ),
@@ -1215,7 +1308,7 @@ class _PillTabs extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             style: TextStyle(
               fontWeight: FontWeight.w800,
-              color: selected ? Colors.white : Colors.black87,
+              color: selected ? cs.onPrimary : cs.onSurface,
             ),
           ),
         ),
