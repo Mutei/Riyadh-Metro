@@ -447,5 +447,7 @@
   "Samples": "عدد الرحلات",
   "No aggregated data yet": "لا توجد بيانات مجمعة بعد",
   "Typical": "اعتيادي",
-  "This trip: stop-to-stop": "هذه الرحلة: من محطة لأخرى"
+  "This trip: stop-to-stop": "هذه الرحلة: من محطة لأخرى",
+  "Segment times": "أوقات المقاطع",
+  "Not logged in": "لم يتم تسجيل الدخول"
 }

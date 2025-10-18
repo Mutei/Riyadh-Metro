@@ -10,6 +10,8 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 ///  - metroLineKeys: ['Green', 'Yellow', ...]    // ordered line sequence
 ///  - fromStation:  'First metro station name'
 ///  - toStation:    'Last metro station name'
+///  - metroSegments/<segId>:
+///       { fromStation, toStation, lineKey, seconds, startedAt, finishedAt }
 class TravelHistoryService {
   final _db = FirebaseDatabase.instance;
   final _auth = FirebaseAuth.instance;
@@ -23,10 +25,10 @@ class TravelHistoryService {
     required LatLng? originLL,
     required LatLng? destLL,
 
-    /// NEW — Only for metro trips (optional, safe to pass nulls for car):
+    /// Only for metro trips (optional; safe to pass nulls for car):
     List<String>? metroLineKeys, // e.g. ['Green', 'Yellow']
-    String? fromStation, // e.g. 'King Abdullah Financial District'
-    String? toStation, // e.g. 'Al Waha'
+    String? fromStation, // e.g. 'Uthman bin Affan'
+    String? toStation, // e.g. 'Al Hamra'
 
     DateTime? startedAt,
   }) async {
@@ -97,6 +99,82 @@ class TravelHistoryService {
       'distanceMeters': distanceMeters,
       'durationSeconds': durationSeconds,
       'finishedAt': (finishedAt ?? DateTime.now()).millisecondsSinceEpoch,
+    });
+  }
+
+  // ────────────────────────── Metro segment helpers ──────────────────────────
+
+  /// Starts a metro segment "from → to" (you may pass `toStation` later).
+  /// Returns the segment key.
+  Future<String?> startMetroSegment({
+    required String entryId,
+    required String fromStation,
+    String? toStation,
+    required String lineKey, // e.g. "green"
+    DateTime? startedAt,
+  }) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return null;
+
+    final ref = _db.ref('App/TravelHistory/$uid/$entryId/metroSegments').push();
+
+    await ref.set({
+      'fromStation': fromStation,
+      'toStation': toStation,
+      'lineKey': lineKey,
+      'seconds': 0,
+      'startedAt': (startedAt ?? DateTime.now()).millisecondsSinceEpoch,
+      'finishedAt': null,
+    });
+    return ref.key;
+  }
+
+  /// Finishes a previously started metro segment, updating end station & time.
+  Future<void> finishMetroSegment({
+    required String entryId,
+    required String segmentId,
+    required String toStation,
+    required int seconds,
+    DateTime? finishedAt,
+  }) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
+
+    final ref =
+        _db.ref('App/TravelHistory/$uid/$entryId/metroSegments/$segmentId');
+    await ref.update({
+      'toStation': toStation,
+      'seconds': seconds,
+      'finishedAt': (finishedAt ?? DateTime.now()).millisecondsSinceEpoch,
+    });
+  }
+
+  /// Convenience: write a metro segment in one shot (if you already know times).
+  Future<void> addMetroSegmentImmediate({
+    required String entryId,
+    required String fromStation,
+    required String toStation,
+    required String lineKey,
+    required int seconds,
+    DateTime? startedAt,
+    DateTime? finishedAt,
+  }) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null) return;
+
+    final ref = _db.ref('App/TravelHistory/$uid/$entryId/metroSegments').push();
+
+    final start =
+        startedAt ?? DateTime.now().subtract(Duration(seconds: seconds));
+    final end = finishedAt ?? DateTime.now();
+
+    await ref.set({
+      'fromStation': fromStation,
+      'toStation': toStation,
+      'lineKey': lineKey,
+      'seconds': seconds,
+      'startedAt': start.millisecondsSinceEpoch,
+      'finishedAt': end.millisecondsSinceEpoch,
     });
   }
 }

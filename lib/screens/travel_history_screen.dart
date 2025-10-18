@@ -1234,6 +1234,23 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
                         ? getTranslated(context, '—')
                         : _fmtClock(context, e.finishedAt!)),
 
+                // ------- SEGMENT TIMES (stream) -------
+                if (e.mode == 'metro') ...[
+                  const SizedBox(height: 14),
+                  Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: Text(
+                      getTranslated(context, 'Segment times'),
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        color: cs.onSurface,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  _SegmentsList(entryId: e.id),
+                ],
+
                 const SizedBox(height: 14),
 
                 // Actions
@@ -1477,6 +1494,200 @@ class TravelEntry {
       metroLineKeys: _readLines(m['metroLineKeys']),
       fromStation: (m['fromStation'] ?? m['from_station'] ?? '') as String?,
       toStation: (m['toStation'] ?? m['to_station'] ?? '') as String?,
+    );
+  }
+}
+
+// ===== Metro segment model + list ===========================================
+
+class MetroSegment {
+  final String id;
+  final String from;
+  final String to;
+  final String lineKey;
+  final int seconds;
+  final DateTime? startedAt;
+  final DateTime? finishedAt;
+
+  MetroSegment({
+    required this.id,
+    required this.from,
+    required this.to,
+    required this.lineKey,
+    required this.seconds,
+    this.startedAt,
+    this.finishedAt,
+  });
+
+  factory MetroSegment.fromMap(String id, Map<dynamic, dynamic> m) {
+    DateTime? _dt(dynamic v) =>
+        (v is num) ? DateTime.fromMillisecondsSinceEpoch(v.toInt()) : null;
+
+    // ✅ read the keys you actually store in Firebase
+    final from = (m['fromStation'] ?? m['from'] ?? '') as String;
+    final to = (m['toStation'] ?? m['to'] ?? '') as String;
+
+    return MetroSegment(
+      id: id,
+      from: from,
+      to: to,
+      lineKey: (m['lineKey'] ?? '') as String,
+      seconds: (m['seconds'] as num?)?.toInt() ?? 0,
+      startedAt: _dt(m['startedAt']),
+      finishedAt: _dt(m['finishedAt']),
+    );
+  }
+}
+
+class _SegmentsList extends StatelessWidget {
+  final String entryId;
+  const _SegmentsList({required this.entryId});
+
+  // Translation helper
+  String _tr(BuildContext ctx, String key, String fallback) {
+    final s = getTranslated(ctx, key);
+    if (s.isEmpty || s.toLowerCase() == 'null') return fallback;
+    return s;
+  }
+
+  // Arabic digits support
+  String _localizeDigits(BuildContext ctx, String input) {
+    final isAr =
+        Localizations.localeOf(ctx).languageCode.toLowerCase().startsWith('ar');
+    if (!isAr) return input;
+    const w = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
+    const a = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
+    return input.split('').map((c) {
+      final i = w.indexOf(c);
+      return i >= 0 ? a[i] : c;
+    }).join();
+  }
+
+  // Format duration (seconds -> "x min")
+  String _fmtMin(BuildContext ctx, int seconds) {
+    final m = (seconds / 60).ceil();
+    final txt = '$m ${_tr(ctx, "min", "min")}';
+    return _localizeDigits(ctx, txt);
+  }
+
+  // Metro line colors
+  Color _segmentLineColor(String key) {
+    switch (key.toLowerCase()) {
+      case 'blue':
+        return const Color(0xFF1976D2);
+      case 'red':
+        return const Color(0xFFD32F2F);
+      case 'green':
+        return const Color(0xFF388E3C);
+      case 'yellow':
+        return const Color(0xFFF9A825);
+      case 'orange':
+        return const Color(0xFFEF6C00);
+      case 'purple':
+        return const Color(0xFF7B1FA2);
+      default:
+        return const Color(0xFF00897B);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Opacity(
+          opacity: 0.7,
+          child: Text(_tr(context, 'Not logged in', 'Not logged in')),
+        ),
+      );
+    }
+
+    final ref = FirebaseDatabase.instance
+        .ref('App/TravelHistory/$uid/$entryId/metroSegments');
+
+    return StreamBuilder<DatabaseEvent>(
+      stream: ref.onValue,
+      builder: (ctx, snap) {
+        final data = snap.data?.snapshot.value;
+        final segments = <MetroSegment>[];
+
+        if (data is Map) {
+          data.forEach((k, v) {
+            if (v is Map) {
+              segments.add(MetroSegment.fromMap(
+                  k as String, Map<dynamic, dynamic>.from(v)));
+            }
+          });
+        }
+
+        // sort by start time
+        segments.sort((a, b) {
+          final ta = a.startedAt?.millisecondsSinceEpoch ?? 0;
+          final tb = b.startedAt?.millisecondsSinceEpoch ?? 0;
+          return ta.compareTo(tb);
+        });
+
+        if (segments.isEmpty) {
+          return Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6),
+            child: Opacity(
+              opacity: 0.7,
+              child: Text(_tr(ctx, 'No segment data', 'No segment data')),
+            ),
+          );
+        }
+
+        final dividerColor =
+            Theme.of(context).colorScheme.outline.withOpacity(0.2);
+
+        return Column(
+          children: segments.map((s) {
+            final from =
+                s.from.isEmpty ? _tr(ctx, "Unknown", "Unknown") : s.from;
+            final to = s.to.isEmpty ? _tr(ctx, "Unknown", "Unknown") : s.to;
+            final line = s.lineKey.isNotEmpty
+                ? ' (${s.lineKey[0].toUpperCase()}${s.lineKey.substring(1).toLowerCase()})'
+                : '';
+
+            return Container(
+              padding: const EdgeInsets.symmetric(vertical: 10),
+              decoration: BoxDecoration(
+                border: Border(bottom: BorderSide(color: dividerColor)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 8,
+                    height: 8,
+                    margin: const EdgeInsets.only(right: 8),
+                    decoration: BoxDecoration(
+                      color: _segmentLineColor(s.lineKey),
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      '→  $from ${_tr(ctx, "to", "to")} $to$line',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(ctx).textTheme.bodyMedium,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Text(
+                    _fmtMin(ctx, s.seconds),
+                    style: Theme.of(ctx)
+                        .textTheme
+                        .bodyMedium
+                        ?.copyWith(fontWeight: FontWeight.w700),
+                  ),
+                ],
+              ),
+            );
+          }).toList(),
+        );
+      },
     );
   }
 }

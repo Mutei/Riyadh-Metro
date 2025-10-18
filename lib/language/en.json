@@ -113,7 +113,7 @@
     "line": "line",
     "Transfer from": "Transfer from",
     "to": "to",
-    "Alight": "Alight",
+    "Alight": "Drop off",
     "Alt": "Alt",
     "Alternate drop-off": "Alternate drop-off",
 
@@ -365,7 +365,7 @@
     "Re-routing...": "Re-routing...",
     "Re-center": "Re-center",
     "After next station": "After next station",
-    "Alight at next station": "Alight at next station",
+    "Alight at next station": "Drop off at next station",
     "Saves fuel": "Saves fuel",
     "Start time": "Start time",
     "End time": "End time",
@@ -449,5 +449,7 @@
       "No aggregated data yet": "No aggregated data yet",
 
       "Typical": "Typical",
-      "This trip: stop-to-stop": "This trip: stop-to-stop"
+      "This trip: stop-to-stop": "This trip: stop-to-stop",
+      "Segment times": "Segment times",
+      "Not logged in": "Not logged in"
   }

@@ -118,6 +118,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
 // NEW: de-dupe for “prepare to transfer”
   final Set<String> _transferPrepareShown = {};
+  String? _activeSegmentId; // NEW: current metro segment push key
+  DateTime? _segmentStartTime; // NEW: when the current metro segment started
+
   // Put near your other fields
   static const String _darkMapStyleJson = r'''
 [
@@ -1038,6 +1041,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     await _renderDrivingRoute(here, _navDestination!);
   }
 
+  // ========= MAIN SCREEN: _startTrip, _attachNavStream, _endTrip ==========
+// Assumes these new fields exist in your State:
+//
+// String? _activeSegmentId;          // current metro segment DB id
+// DateTime? _segmentStartTime;       // when current metro segment started
+//
+// and you have a TravelHistoryService instance as _travelSvc
+
   Future<void> _startTrip() async {
     if (_userDestination == null) {
       _notify(getTranslated(context, 'Pick a destination first.'));
@@ -1139,6 +1150,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _followEnabled = true;
       _offRouteStreak = 0;
       _isRerouting = false;
+      // reset metro segment bookkeeping
+      _activeSegmentId = null;
+      _segmentStartTime = null;
     });
 
     // ---------- Metro setup & first-mile override to the first station ----------
@@ -1168,7 +1182,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
         if (dToFirst > NEAR_STATION_M) {
           // 1) Keep the metro route visible UNDER the live driving route
-          //    so the user always sees the planned line(s).
           await _renderRouteOnMap(_lastChosenRoute!);
 
           // 2) Mark first-mile to station and temporarily switch UI to car
@@ -1182,7 +1195,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           _trafficEnabled = true;
           _navDestination = _firstStationLL;
 
-          // 3) Build the driving route BUT preserve the metro overlays we just drew
+          // 3) Build the driving route BUT preserve the metro overlays
           await _renderDrivingRoute(here0, _firstStationLL!,
               preserveMetroOverlays: true);
 
@@ -1213,6 +1226,18 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           await _renderRouteOnMap(
               _lastChosenRoute!); // make sure line is visible
           _navPolyline = null; // no driving breadcrumb in metro
+
+          // NEW: start first metro segment immediately (0->1) if possible
+          if (_activeTripId != null && _metroSeq.length >= 2) {
+            _segmentStartTime = DateTime.now();
+            _activeSegmentId = await _travelSvc.startMetroSegment(
+              entryId: _activeTripId!,
+              fromStation: _metroSeq[0].name,
+              toStation: _metroSeq[1].name,
+              lineKey: _metroSeq[0].lineKey,
+              startedAt: _segmentStartTime,
+            );
+          }
         }
       }
     } else if (_tripMode == _TripMode.drive &&
@@ -1353,7 +1378,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         uiPos = (isRealFix || drAllowed) ? here : (_lastNavPoint ?? here);
       }
 
-      // ── FIRST-MILE TO STATION: keep instructing; if user reaches ANY station, flip to metro and (re)plan
+      // ── FIRST-MILE TO STATION: when user reaches ANY station, flip to metro and (re)plan
       if (_firstMileToStation) {
         if (!_firstMilePrompted) {
           final lKey = _firstStationLineKey ?? '';
@@ -1399,26 +1424,29 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               final newOpts = _planRoutes(near.pos, _tripDestLL!);
               if (newOpts.isNotEmpty) {
                 _lastChosenRoute = newOpts.first;
-                // draw chosen metro route overlays
                 await _renderRouteOnMap(_lastChosenRoute!);
-                // refresh metro sequence context for banners
                 _metroSeq = _lastChosenRoute!.nodeIds
                     .where((id) => id.contains(':'))
                     .map((id) => _lastChosenRoute!.nodes[id]!)
                     .toList();
-                _metroLeg = 0;
-                _metroNextName =
-                    (_metroSeq.length >= 2) ? _metroSeq[1].name : null;
-                _metroAfterName =
-                    (_metroSeq.length >= 3) ? _metroSeq[2].name : null;
-                _metroAlightAtNext = (_metroSeq.length >= 2) &&
-                    (_metroSeq[1].id == _metroSeq.last.id);
               }
             } else {
               // Keep original plan; just ensure overlays are visible again
               if (_lastChosenRoute != null) {
                 await _renderRouteOnMap(_lastChosenRoute!);
               }
+            }
+
+            // NEW: begin first metro segment now (0->1) if possible
+            if (_activeTripId != null && _metroSeq.length >= 2) {
+              _segmentStartTime = DateTime.now();
+              _activeSegmentId = await _travelSvc.startMetroSegment(
+                entryId: _activeTripId!,
+                fromStation: _metroSeq[0].name,
+                toStation: _metroSeq[1].name,
+                lineKey: _metroSeq[0].lineKey,
+                startedAt: _segmentStartTime,
+              );
             }
 
             _notifyOnce(
@@ -1536,11 +1564,44 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         }
 
         if (arrivedNow) {
+          // ===== NEW: close current segment and open the next one =====
+          if (_activeTripId != null &&
+              _activeSegmentId != null &&
+              _segmentStartTime != null) {
+            final int segSecs = now.difference(_segmentStartTime!).inSeconds;
+            await _travelSvc.finishMetroSegment(
+              entryId: _activeTripId!,
+              segmentId: _activeSegmentId!,
+              toStation: nextSt.name,
+              seconds: segSecs,
+              finishedAt: now,
+            );
+            _activeSegmentId = null;
+            _segmentStartTime = null;
+          }
+
+          // Move to next leg
           if (_metroLeg + 1 < _metroSeq.length) {
             _metroLeg = (_metroLeg + 1).clamp(0, _metroSeq.length - 1);
           }
           _nearNextSince = null;
           _nextMinDist = double.infinity;
+
+          // Start the following segment if there is one
+          if (_metroLeg < _metroSeq.length - 1 &&
+              _activeTripId != null &&
+              _metroSeq.length >= 2) {
+            final StationNode curr = _metroSeq[_metroLeg];
+            final StationNode nxt = _metroSeq[_metroLeg + 1];
+            _segmentStartTime = now;
+            _activeSegmentId = await _travelSvc.startMetroSegment(
+              entryId: _activeTripId!,
+              fromStation: curr.name,
+              toStation: nxt.name,
+              lineKey: curr.lineKey,
+              startedAt: now,
+            );
+          }
 
           // last-mile auto switch to car if destination not right next to final station
           final bool atFinalStation = (_metroLeg == _metroSeq.length - 1);
@@ -1819,6 +1880,79 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     });
   }
 
+  void _endTrip() async {
+    // Stop background session (but do not call this in dispose)
+    await _bgNav.stop();
+    _uiNavSub?.cancel();
+    _uiNavSub = null;
+
+    _predictTimer?.cancel();
+    _predictTimer = null;
+
+    // Close any open metro segment before finalizing the trip
+    if (_tripMode == _TripMode.metro &&
+        _activeTripId != null &&
+        _activeSegmentId != null &&
+        _segmentStartTime != null) {
+      final int segSecs =
+          DateTime.now().difference(_segmentStartTime!).inSeconds;
+      await _travelSvc.finishMetroSegment(
+        entryId: _activeTripId!,
+        segmentId: _activeSegmentId!,
+        toStation: (_metroSeq.isNotEmpty) ? _metroSeq.last.name : '—',
+        seconds: segSecs,
+        finishedAt: DateTime.now(),
+      );
+      _activeSegmentId = null;
+      _segmentStartTime = null;
+    }
+
+    // finalize history if started
+    if (_activeTripId != null && _tripStartAt != null) {
+      final duration = DateTime.now().difference(_tripStartAt!).inSeconds;
+      await _travelSvc.finishTrip(
+        entryId: _activeTripId!,
+        distanceMeters: _tripDistance,
+        durationSeconds: duration,
+        finishedAt: DateTime.now(),
+      );
+    }
+
+    setState(() {
+      _navigating = false;
+      _followEnabled = true;
+      _navPolyline = null;
+      _navPoints.clear();
+      _navDestination = null;
+      _navRemainingMeters = 0;
+      _navSpeedMps = 0;
+
+      _activeTripId = null;
+      _tripStartAt = null;
+      _tripDistance = 0;
+      _lastNavPoint = null;
+
+      _navSteps = [];
+      _navStepIndex = 0;
+      _navNow = null;
+      _navNext = null;
+      _trafficEnabled = false;
+
+      _userArrowMarker = null;
+
+      // Reset metro helpers
+      _nearDestSince = null;
+      _nearFinalSince = null;
+      _metroLeg = 0;
+      _nearNextSince = null;
+      _nextMinDist = double.infinity;
+
+      // segment bookkeeping
+      _activeSegmentId = null;
+      _segmentStartTime = null;
+    });
+  }
+
   bool _preboardCar = false; // true while driving to the first metro station
   bool _postAlightCar = false;
 
@@ -1911,56 +2045,82 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  void _endTrip() async {
-    // Stop background session (but do not call this in dispose)
-    await _bgNav.stop();
-    _uiNavSub?.cancel();
-    _uiNavSub = null;
-
-    _predictTimer?.cancel();
-    _predictTimer = null;
-
-    // finalize history if started
-    if (_activeTripId != null && _tripStartAt != null) {
-      final duration = DateTime.now().difference(_tripStartAt!).inSeconds;
-      await _travelSvc.finishTrip(
-        entryId: _activeTripId!,
-        distanceMeters: _tripDistance,
-        durationSeconds: duration,
-        finishedAt: DateTime.now(),
-      );
-    }
-
-    setState(() {
-      _navigating = false;
-      _followEnabled = true;
-      _navPolyline = null;
-      _navPoints.clear();
-      _navDestination = null;
-      _navRemainingMeters = 0;
-      _navSpeedMps = 0;
-
-      _activeTripId = null;
-      _tripStartAt = null;
-      _tripDistance = 0;
-      _lastNavPoint = null;
-
-      _navSteps = [];
-      _navStepIndex = 0;
-      _navNow = null;
-      _navNext = null;
-      _trafficEnabled = false;
-
-      _userArrowMarker = null;
-
-      // Reset metro helpers
-      _nearDestSince = null;
-      _nearFinalSince = null;
-      _metroLeg = 0;
-      _nearNextSince = null;
-      _nextMinDist = double.infinity;
-    });
-  }
+  // void _endTrip() async {
+  //   // Stop background session (but do not call this in dispose)
+  //   await _bgNav.stop();
+  //   _uiNavSub?.cancel();
+  //   _uiNavSub = null;
+  //
+  //   _predictTimer?.cancel();
+  //   _predictTimer = null;
+  //
+  //   // NEW: if a metro segment is running, finish it now
+  //   if (_tripMode == _TripMode.metro &&
+  //       _activeTripId != null &&
+  //       _activeSegmentId != null &&
+  //       _segmentStartTime != null) {
+  //     final int segSecs = DateTime.now()
+  //         .difference(_segmentStartTime!)
+  //         .inSeconds
+  //         .clamp(1, 86400);
+  //     // Try to close with final station name when we have it
+  //     final String toName = (_metroSeq.isNotEmpty) ? _metroSeq.last.name : '—';
+  //     await _travelSvc.finishMetroSegment(
+  //       entryId: _activeTripId!,
+  //       segmentId: _activeSegmentId!,
+  //       toStation: toName,
+  //       seconds: segSecs,
+  //       finishedAt: DateTime.now(),
+  //     );
+  //     _activeSegmentId = null;
+  //     _segmentStartTime = null;
+  //   }
+  //
+  //   // finalize history if started
+  //   if (_activeTripId != null && _tripStartAt != null) {
+  //     final duration = DateTime.now().difference(_tripStartAt!).inSeconds;
+  //     await _travelSvc.finishTrip(
+  //       entryId: _activeTripId!,
+  //       distanceMeters: _tripDistance,
+  //       durationSeconds: duration,
+  //       finishedAt: DateTime.now(),
+  //     );
+  //   }
+  //
+  //   setState(() {
+  //     _navigating = false;
+  //     _followEnabled = true;
+  //     _navPolyline = null;
+  //     _navPoints.clear();
+  //     _navDestination = null;
+  //     _navRemainingMeters = 0;
+  //     _navSpeedMps = 0;
+  //
+  //     _activeTripId = null;
+  //     _tripStartAt = null;
+  //     _tripDistance = 0;
+  //     _lastNavPoint = null;
+  //
+  //     _navSteps = [];
+  //     _navStepIndex = 0;
+  //     _navNow = null;
+  //     _navNext = null;
+  //     _trafficEnabled = false;
+  //
+  //     _userArrowMarker = null;
+  //
+  //     // Reset metro helpers
+  //     _nearDestSince = null;
+  //     _nearFinalSince = null;
+  //     _metroLeg = 0;
+  //     _nearNextSince = null;
+  //     _nextMinDist = double.infinity;
+  //
+  //     // NEW: clear any segment trackers
+  //     _activeSegmentId = null;
+  //     _segmentStartTime = null;
+  //   });
+  // }
 
   // Car ETA (old behavior preserved)
   double _etaSecondsCar() {

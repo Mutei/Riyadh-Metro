@@ -19,7 +19,7 @@ class AccountDrawerScreen extends StatelessWidget {
   const AccountDrawerScreen({
     super.key,
     required this.displayName,
-    this.appVersion = "1.2.0",
+    this.appVersion = "1.2.1",
   });
 
   @override
