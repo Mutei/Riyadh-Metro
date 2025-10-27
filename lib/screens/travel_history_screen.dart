@@ -1174,112 +1174,107 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
 
     // --- SCROLLABLE CONTENT to avoid overflow ---
     return SafeArea(
-      child: LayoutBuilder(
-        builder: (ctx, cons) => SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-          child: ConstrainedBox(
-            constraints:
-                BoxConstraints(minHeight: 0, maxHeight: cons.maxHeight),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Summary chips (Wrap to avoid overflow)
-                Align(
-                  alignment: AlignmentDirectional.centerStart,
-                  child: Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
-                    crossAxisAlignment: WrapCrossAlignment.center,
-                    children: [
-                      _modeBadge(context, theme, e.mode),
-                      _chip(theme, Icons.schedule,
-                          _fmtDuration(context, e.durationSeconds)),
-                      _chip(theme, Icons.pin_drop_outlined,
-                          _fmtDistance(context, e.distanceMeters)),
-                      _datePill(theme, _friendlyDate(context, e.startedAt)),
-                    ],
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Summary chips (Wrap to avoid overflow)
+            Align(
+              alignment: AlignmentDirectional.centerStart,
+              child: Wrap(
+                spacing: 10,
+                runSpacing: 10,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                children: [
+                  _modeBadge(context, theme, e.mode),
+                  _chip(theme, Icons.schedule,
+                      _fmtDuration(context, e.durationSeconds)),
+                  _chip(theme, Icons.pin_drop_outlined,
+                      _fmtDistance(context, e.distanceMeters)),
+                  _datePill(theme, _friendlyDate(context, e.startedAt)),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+
+            // Lines used (metro only) – NEW responsive section
+            if (e.mode == 'metro' && lines.isNotEmpty) ...[
+              LinesUsedSection(
+                keys: lines,
+                title: getTranslated(context, 'Lines used'),
+                colorFor: _lineColor,
+              ),
+              const SizedBox(height: 10),
+            ],
+
+            // Origin / Destination, stations
+            _kv(theme, getTranslated(context, 'Origin'),
+                e.originLabel ?? getTranslated(context, 'Unknown')),
+            _kv(theme, getTranslated(context, 'Destination'),
+                e.destLabel ?? getTranslated(context, 'Unknown')),
+            if (e.mode == 'metro') ...[
+              _kv(theme, getTranslated(context, 'From station'),
+                  e.fromStation ?? getTranslated(context, 'Unknown')),
+              _kv(theme, getTranslated(context, 'To station'),
+                  e.toStation ?? getTranslated(context, 'Unknown')),
+            ],
+
+            // Start / End times
+            _kv(theme, getTranslated(context, 'Start time'),
+                _fmtClock(context, e.startedAt)),
+            _kv(
+                theme,
+                getTranslated(context, 'End time'),
+                e.finishedAt == null
+                    ? getTranslated(context, '—')
+                    : _fmtClock(context, e.finishedAt!)),
+
+            // ------- SEGMENT TIMES (stream) -------
+            if (e.mode == 'metro') ...[
+              const SizedBox(height: 14),
+              Align(
+                alignment: AlignmentDirectional.centerStart,
+                child: Text(
+                  getTranslated(context, 'Segment times'),
+                  style: theme.textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: cs.onSurface,
                   ),
                 ),
-                const SizedBox(height: 12),
+              ),
+              const SizedBox(height: 8),
+              _SegmentsList(entryId: e.id),
+            ],
 
-                // Lines used (metro only) – NEW responsive section
-                if (e.mode == 'metro' && lines.isNotEmpty) ...[
-                  LinesUsedSection(
-                    keys: lines,
-                    title: getTranslated(context, 'Lines used'),
-                    colorFor: _lineColor,
+            const SizedBox(height: 14),
+
+            // Actions
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: widget.onNavigateAgain,
+                    icon: const Icon(Icons.navigation_rounded),
+                    label: Text(getTranslated(context, 'Navigate again')),
                   ),
-                  const SizedBox(height: 10),
-                ],
-
-                // Origin / Destination, stations
-                _kv(theme, getTranslated(context, 'Origin'),
-                    e.originLabel ?? getTranslated(context, 'Unknown')),
-                _kv(theme, getTranslated(context, 'Destination'),
-                    e.destLabel ?? getTranslated(context, 'Unknown')),
-                if (e.mode == 'metro') ...[
-                  _kv(theme, getTranslated(context, 'From station'),
-                      e.fromStation ?? getTranslated(context, 'Unknown')),
-                  _kv(theme, getTranslated(context, 'To station'),
-                      e.toStation ?? getTranslated(context, 'Unknown')),
-                ],
-
-                // Start / End times
-                _kv(theme, getTranslated(context, 'Start time'),
-                    _fmtClock(context, e.startedAt)),
-                _kv(
-                    theme,
-                    getTranslated(context, 'End time'),
-                    e.finishedAt == null
-                        ? getTranslated(context, '—')
-                        : _fmtClock(context, e.finishedAt!)),
-
-                // ------- SEGMENT TIMES (stream) -------
-                if (e.mode == 'metro') ...[
-                  const SizedBox(height: 14),
-                  Align(
-                    alignment: AlignmentDirectional.centerStart,
-                    child: Text(
-                      getTranslated(context, 'Segment times'),
-                      style: theme.textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w800,
-                        color: cs.onSurface,
-                      ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.red.shade600,
+                      foregroundColor: Colors.white,
                     ),
+                    onPressed: widget.onDelete,
+                    icon: const Icon(Icons.delete_forever_rounded),
+                    label: Text(getTranslated(context, 'Delete')),
                   ),
-                  const SizedBox(height: 8),
-                  _SegmentsList(entryId: e.id),
-                ],
-
-                const SizedBox(height: 14),
-
-                // Actions
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        onPressed: widget.onNavigateAgain,
-                        icon: const Icon(Icons.navigation_rounded),
-                        label: Text(getTranslated(context, 'Navigate again')),
-                      ),
-                    ),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red.shade600,
-                          foregroundColor: Colors.white,
-                        ),
-                        onPressed: widget.onDelete,
-                        icon: const Icon(Icons.delete_forever_rounded),
-                        label: Text(getTranslated(context, 'Delete')),
-                      ),
-                    ),
-                  ],
                 ),
               ],
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -1543,35 +1538,37 @@ class _SegmentsList extends StatelessWidget {
   final String entryId;
   const _SegmentsList({required this.entryId});
 
-  // Translation helper
-  String _tr(BuildContext ctx, String key, String fallback) {
+  // ---------- i18n helpers ----------
+  String _tr(BuildContext ctx, String key, String fb) {
     final s = getTranslated(ctx, key);
-    if (s.isEmpty || s.toLowerCase() == 'null') return fallback;
-    return s;
+    if (s.isEmpty) return fb;
+    final low = s.toLowerCase();
+    return (low == 'null' || low == 'undefined') ? fb : s;
   }
 
-  // Arabic digits support
-  String _localizeDigits(BuildContext ctx, String input) {
-    final isAr =
-        Localizations.localeOf(ctx).languageCode.toLowerCase().startsWith('ar');
-    if (!isAr) return input;
+  bool _isAr(BuildContext ctx) =>
+      Localizations.localeOf(ctx).languageCode.toLowerCase().startsWith('ar');
+
+  String _digits(BuildContext ctx, String s) {
+    if (!_isAr(ctx)) return s;
     const w = ['0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
     const a = ['٠', '١', '٢', '٣', '٤', '٥', '٦', '٧', '٨', '٩'];
-    return input.split('').map((c) {
+    return s.split('').map((c) {
       final i = w.indexOf(c);
       return i >= 0 ? a[i] : c;
     }).join();
   }
 
-  // Format duration (seconds -> "x min")
   String _fmtMin(BuildContext ctx, int seconds) {
     final m = (seconds / 60).ceil();
-    final txt = '$m ${_tr(ctx, "min", "min")}';
-    return _localizeDigits(ctx, txt);
+    return _digits(ctx, '$m ${_tr(ctx, "min", "min")}');
   }
 
-  // Metro line colors
-  Color _segmentLineColor(String key) {
+  String _fmtClock(BuildContext ctx, DateTime dt) => _digits(ctx,
+      '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}');
+
+  // ---------- colors ----------
+  Color _lineColor(String key) {
     switch (key.toLowerCase()) {
       case 'blue':
         return const Color(0xFF1976D2);
@@ -1590,6 +1587,107 @@ class _SegmentsList extends StatelessWidget {
     }
   }
 
+  // ---------- small reusable UI ----------
+  Widget _durationPill(BuildContext ctx, String text, {bool dense = false}) {
+    final cs = Theme.of(ctx).colorScheme;
+    return Container(
+      padding: EdgeInsets.symmetric(
+          horizontal: dense ? 10 : 12, vertical: dense ? 6 : 7),
+      decoration: BoxDecoration(
+        color: cs.surfaceVariant.withOpacity(.9),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: cs.outline.withOpacity(.5)),
+      ),
+      child: Text(
+        text,
+        style: Theme.of(ctx).textTheme.labelMedium?.copyWith(
+              fontWeight: FontWeight.w800,
+              color: cs.onSurface,
+            ),
+      ),
+    );
+  }
+
+  Widget _lineChip(BuildContext ctx, String lineKey) {
+    final pretty = lineKey.isEmpty
+        ? _tr(ctx, 'Line', 'Line')
+        : '${lineKey[0].toUpperCase()}${lineKey.substring(1).toLowerCase()}';
+    final c = _lineColor(lineKey);
+    final isDark = Theme.of(ctx).brightness == Brightness.dark;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: c.withOpacity(isDark ? .20 : .12),
+        border: Border.all(color: c.withOpacity(.45)),
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
+        const SizedBox(width: 6),
+        Text(
+          pretty,
+          style: Theme.of(ctx).textTheme.labelSmall?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: Theme.of(ctx).colorScheme.onSurface,
+              ),
+        ),
+      ]),
+    );
+  }
+
+  // ---------- details dialog ----------
+  void _showSegmentDialog(BuildContext ctx, MetroSegment s) {
+    final cs = Theme.of(ctx).colorScheme;
+    final from = s.from.isEmpty ? _tr(ctx, 'Unknown', 'Unknown') : s.from;
+    final to = s.to.isEmpty ? _tr(ctx, 'Unknown', 'Unknown') : s.to;
+    final times = (s.startedAt != null && s.finishedAt != null)
+        ? '${_fmtClock(ctx, s.startedAt!)} – ${_fmtClock(ctx, s.finishedAt!)}'
+        : null;
+
+    showDialog(
+      context: ctx,
+      builder: (_) => AlertDialog(
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text(_tr(ctx, 'Segment details', 'Segment details')),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${_tr(ctx, "From station", "From station")}: $from'),
+              const SizedBox(height: 6),
+              Text('${_tr(ctx, "To station", "To station")}: $to'),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  _lineChip(ctx, s.lineKey),
+                  const SizedBox(width: 8),
+                  _durationPill(ctx, _fmtMin(ctx, s.seconds), dense: true),
+                ],
+              ),
+              if (times != null) ...[
+                const SizedBox(height: 8),
+                Opacity(
+                  opacity: .8,
+                  child: Text(times, style: Theme.of(ctx).textTheme.bodySmall),
+                ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: Text(_tr(ctx, 'Close', 'Close')),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -1597,9 +1695,8 @@ class _SegmentsList extends StatelessWidget {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
         child: Opacity(
-          opacity: 0.7,
-          child: Text(_tr(context, 'Not logged in', 'Not logged in')),
-        ),
+            opacity: .7,
+            child: Text(_tr(context, 'Not logged in', 'Not logged in'))),
       );
     }
 
@@ -1615,16 +1712,19 @@ class _SegmentsList extends StatelessWidget {
         if (data is Map) {
           data.forEach((k, v) {
             if (v is Map) {
-              segments.add(MetroSegment.fromMap(
-                  k as String, Map<dynamic, dynamic>.from(v)));
+              segments.add(
+                MetroSegment.fromMap(
+                    k as String, Map<dynamic, dynamic>.from(v)),
+              );
             }
           });
         }
 
-        // sort by start time
+        // order by startedAt then id
         segments.sort((a, b) {
           final ta = a.startedAt?.millisecondsSinceEpoch ?? 0;
           final tb = b.startedAt?.millisecondsSinceEpoch ?? 0;
+          if (ta == tb) return a.id.compareTo(b.id);
           return ta.compareTo(tb);
         });
 
@@ -1632,60 +1732,138 @@ class _SegmentsList extends StatelessWidget {
           return Padding(
             padding: const EdgeInsets.symmetric(vertical: 6),
             child: Opacity(
-              opacity: 0.7,
-              child: Text(_tr(ctx, 'No segment data', 'No segment data')),
-            ),
+                opacity: .7,
+                child: Text(_tr(ctx, 'No segment data', 'No segment data'))),
           );
         }
 
-        final dividerColor =
-            Theme.of(context).colorScheme.outline.withOpacity(0.2);
+        // make the list independently scrollable
+        return LayoutBuilder(
+          builder: (ctx, cons) {
+            final cappedHeight = (cons.maxHeight.isFinite && cons.maxHeight > 0)
+                ? cons.maxHeight * 0.45
+                : 320.0;
 
-        return Column(
-          children: segments.map((s) {
-            final from =
-                s.from.isEmpty ? _tr(ctx, "Unknown", "Unknown") : s.from;
-            final to = s.to.isEmpty ? _tr(ctx, "Unknown", "Unknown") : s.to;
-            final line = s.lineKey.isNotEmpty
-                ? ' (${s.lineKey[0].toUpperCase()}${s.lineKey.substring(1).toLowerCase()})'
-                : '';
+            final compact = cons.maxWidth < 360;
+            final cardPad = EdgeInsets.symmetric(
+              horizontal: compact ? 10 : 14,
+              vertical: compact ? 10 : 12,
+            );
+            final gapSm = compact ? 6.0 : 8.0;
+            final gapMd = compact ? 8.0 : 12.0;
 
-            return Container(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              decoration: BoxDecoration(
-                border: Border(bottom: BorderSide(color: dividerColor)),
-              ),
-              child: Row(
-                children: [
-                  Container(
-                    width: 8,
-                    height: 8,
-                    margin: const EdgeInsets.only(right: 8),
-                    decoration: BoxDecoration(
-                      color: _segmentLineColor(s.lineKey),
-                      shape: BoxShape.circle,
+            return SizedBox(
+              height: cappedHeight.clamp(240.0, 420.0),
+              child: ListView.separated(
+                padding: const EdgeInsets.only(bottom: 6),
+                physics: const BouncingScrollPhysics(),
+                itemCount: segments.length,
+                separatorBuilder: (_, __) => const SizedBox(height: 8),
+                itemBuilder: (_, i) {
+                  final s = segments[i];
+                  final from =
+                      s.from.isEmpty ? _tr(ctx, 'Unknown', 'Unknown') : s.from;
+                  final to =
+                      s.to.isEmpty ? _tr(ctx, 'Unknown', 'Unknown') : s.to;
+                  final mainText = '→  $from  ${_tr(ctx, "to", "to")}  $to';
+                  final c = _lineColor(s.lineKey);
+
+                  String? clock;
+                  if (s.startedAt != null && s.finishedAt != null) {
+                    clock =
+                        '${_fmtClock(ctx, s.startedAt!)} – ${_fmtClock(ctx, s.finishedAt!)}';
+                  }
+
+                  return InkWell(
+                    borderRadius: BorderRadius.circular(16),
+                    onTap: () => _showSegmentDialog(ctx, s),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: Theme.of(ctx).cardColor,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                            color: Theme.of(ctx)
+                                .colorScheme
+                                .outline
+                                .withOpacity(.35)),
+                        boxShadow: [
+                          BoxShadow(
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                            color: Colors.black.withOpacity(
+                              Theme.of(ctx).brightness == Brightness.dark
+                                  ? 0.12
+                                  : 0.06,
+                            ),
+                          ),
+                        ],
+                      ),
+                      padding: cardPad,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Container(
+                            width: compact ? 10 : 12,
+                            height: compact ? 10 : 12,
+                            margin: EdgeInsetsDirectional.only(end: gapSm),
+                            decoration:
+                                BoxDecoration(color: c, shape: BoxShape.circle),
+                          ),
+                          Icon(Icons.arrow_right_alt_rounded,
+                              size: compact ? 18 : 22,
+                              color: Theme.of(ctx)
+                                  .colorScheme
+                                  .onSurface
+                                  .withOpacity(.85)),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  mainText,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: Theme.of(ctx)
+                                      .textTheme
+                                      .bodyLarge
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                ),
+                                SizedBox(height: gapSm),
+                                Wrap(
+                                  spacing: 8,
+                                  runSpacing: 4,
+                                  crossAxisAlignment: WrapCrossAlignment.center,
+                                  children: [
+                                    _lineChip(ctx, s.lineKey),
+                                    if (clock != null)
+                                      Opacity(
+                                        opacity: .7,
+                                        child: Text(
+                                          _digits(ctx, clock),
+                                          style: Theme.of(ctx)
+                                              .textTheme
+                                              .labelSmall,
+                                        ),
+                                      ),
+                                  ],
+                                ),
+                              ],
+                            ),
+                          ),
+                          SizedBox(width: gapMd),
+                          _durationPill(ctx, _fmtMin(ctx, s.seconds),
+                              dense: compact),
+                        ],
+                      ),
                     ),
-                  ),
-                  Expanded(
-                    child: Text(
-                      '→  $from ${_tr(ctx, "to", "to")} $to$line',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(ctx).textTheme.bodyMedium,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    _fmtMin(ctx, s.seconds),
-                    style: Theme.of(ctx)
-                        .textTheme
-                        .bodyMedium
-                        ?.copyWith(fontWeight: FontWeight.w700),
-                  ),
-                ],
+                  );
+                },
               ),
             );
-          }).toList(),
+          },
         );
       },
     );

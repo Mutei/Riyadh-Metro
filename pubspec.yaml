@@ -55,6 +55,7 @@ dependencies:
   flutter_tts: ^4.2.3
   just_audio: ^0.9.46
   light: ^4.1.0
+  timezone: ^0.9.4
 
 
 dev_dependencies:

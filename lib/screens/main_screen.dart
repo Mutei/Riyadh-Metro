@@ -16,6 +16,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 
 import '../constants/colors.dart';
+import '../services/app_bus.dart';
 import '../services/local_notifications.dart';
 import '../widgets/all_metro_lines.dart'; // metroLineColors
 import '../widgets/onboard_display.dart';
@@ -571,6 +572,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   Timer? _debounce;
   List<_Suggest> _suggestions = [];
+  StreamSubscription? _busRouteSub;
+  StreamSubscription? _busFocusSub;
 
   // Favorites cache for searching
   final _db = FirebaseDatabase.instance;
@@ -2204,15 +2207,24 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         a.latitude, a.longitude, b.latitude, b.longitude);
   }
 
+  LatLng? _selectedOriginLatLng;
+  LatLng? _selectedDestinationLatLng;
+
+  StreamSubscription? _busSub;
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    AppLocalNotifications.init(); // safe to call multiple times
+
+    // Notifications & graph
+    AppLocalNotifications.init(); // safe multi-call
     _graph = MetroGraph();
 
+    // Seed inputs
     _originCtrl.text = '...';
     _destCtrl.text = '';
+
+    // Text controllers → clear routes when emptied
     _originCtrl.addListener(() {
       final t = _originCtrl.text.trim();
       if (t.isEmpty) {
@@ -2220,7 +2232,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _clearPlannedTrip(keepDestMarker: true);
       }
     });
-
     _destCtrl.addListener(() {
       final t = _destCtrl.text.trim();
       if (t.isEmpty) {
@@ -2229,6 +2240,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       }
     });
 
+    // Focus nodes → expand sheet when typing
     _originFocus.addListener(() {
       if (_originFocus.hasFocus) {
         setState(() => _active = _ActiveField.origin);
@@ -2242,11 +2254,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       }
     });
 
+    // Map prep & data streams
     _initLocationAndCenter();
     _prepareDestinationIcon();
     _listenFavorites();
 
-    // ⤵️ If a background nav session is already active, reattach UI
+    // If a background nav session is already active, reattach UI
     if (_bgNav.isActive) {
       setState(() {
         _navigating = true;
@@ -2254,6 +2267,78 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       });
       _attachNavStream();
     }
+
+    // Apply map style according to current theme (no-op if controller not ready)
+    _applyMapStyleForTheme();
+
+    // —— NEW: listen to Darb Bot app-bus events (typed listeners)
+    // Requires: fields
+    //   StreamSubscription<RouteRequestEvent>? _busRouteSub;
+    //   StreamSubscription<FocusStationEvent>? _busFocusSub;
+    _busFocusSub = AppBus.I.on<FocusStationEvent>((e) async {
+      if (!mounted) return;
+      // Wait for map controller if needed
+      try {
+        final mapCtrl = await _mapController.future;
+        await mapCtrl.animateCamera(
+          CameraUpdate.newLatLngZoom(e.ll, e.zoom ?? 16.0),
+        );
+        // Optional: pulse/highlight station here
+        // _showPulse(e.ll);
+      } catch (_) {}
+    });
+
+    _busRouteSub = AppBus.I.on<RouteRequestEvent>((e) async {
+      if (!mounted) return;
+
+      // Ensure map is ready
+      try {
+        await _mapController.future;
+      } catch (_) {}
+
+      // Reset any existing plan
+      _clearPlannedTrip(keepDestMarker: false);
+
+      // Set endpoints from bot
+      _userOrigin = e.from;
+      _userDestination = e.to;
+
+      // Optional: show friendly names in the inputs
+      try {
+        final fromName = _nearestStationName(e.from);
+        final toName = _nearestStationName(e.to);
+        if (fromName != null) _originCtrl.text = fromName;
+        if (toName != null) _destCtrl.text = toName;
+      } catch (_) {
+        // Fallback placeholders if name lookup fails
+        _originCtrl.text = 'Selected origin';
+        _destCtrl.text = 'Selected destination';
+      }
+
+      // Prefer metro; fall back to car if no metro route found
+      _tripMode = _TripMode.metro;
+      _trafficEnabled = false;
+
+      final options = _planRoutes(e.from, e.to); // your existing planner
+      if (options.isNotEmpty) {
+        _lastRouteOptions = options;
+        _lastChosenRoute = options.first;
+        await _renderRouteOnMap(_lastChosenRoute!);
+        _navDestination = e.to;
+      } else {
+        _tripMode = _TripMode.drive;
+        _trafficEnabled = true;
+        await _renderDrivingRoute(e.from, e.to);
+      }
+
+      // Fit camera and tidy UI
+      await _focusRouteViewport();
+      await _collapseSheetForRoute(size: 0.32);
+      _active = _ActiveField.none;
+      FocusManager.instance.primaryFocus?.unfocus();
+
+      if (mounted) setState(() {});
+    });
   }
 
   void _listenFavorites() {
@@ -2288,8 +2373,111 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _navSub?.cancel(); // safe if unused after migration
     _favSub?.cancel();
     _predictTimer?.cancel();
+    _busSub?.cancel();
+    _busRouteSub?.cancel();
+    _busFocusSub?.cancel();
 
     super.dispose();
+  }
+
+  Future<void> _onExternalRouteRequest(RouteRequestEvent e) async {
+    // Clear any previous overlays/trip
+    _clearPlannedTrip(keepDestMarker: false);
+
+    // Set trip endpoints for the planner
+    _userOrigin = e.from;
+    _userDestination = e.to;
+
+    // If you keep text fields in sync, optionally fill them with nearest station names
+    try {
+      final fromName = _nearestStationName(e.from);
+      final toName = _nearestStationName(e.to);
+      if (fromName != null) _originCtrl.text = fromName;
+      if (toName != null) _destCtrl.text = toName;
+    } catch (_) {}
+
+    // By default plan for metro first; fall back to drive if needed
+    _tripMode = _TripMode.metro;
+    _trafficEnabled = false;
+
+    // Plan routes and render
+    final options = await _planAndRender(e.from, e.to);
+
+    // Focus the camera and collapse to route view
+    await _focusRouteViewport();
+    await _collapseSheetForRoute(size: 0.32);
+  }
+
+  /// Helper: plan and draw
+  Future<List<RouteOption>> _planAndRender(LatLng from, LatLng to) async {
+    // Your existing planner; adjust the call name to yours
+    final opts = _planRoutes(from, to); // returns List<RouteOption>
+    if (opts.isNotEmpty) {
+      _lastRouteOptions = opts;
+      _lastChosenRoute = opts.first;
+      await _renderRouteOnMap(_lastChosenRoute!);
+      // Drop a nice destination marker if you do that elsewhere
+      _navDestination = to;
+    } else {
+      // No metro route; switch to car
+      _tripMode = _TripMode.drive;
+      _trafficEnabled = true;
+      await _renderDrivingRoute(from, to);
+    }
+    setState(() {});
+    return opts;
+  }
+
+  /// Helper: fit camera to the drawn route (metro or car)
+  Future<void> _focusRouteViewport() async {
+    final c = await _mapController.future;
+    // If you store route polylines, collect their points; otherwise use endpoints
+    final points = <LatLng>[];
+    for (final p in _routePolylines) {
+      points.addAll(p.points);
+    }
+    if (points.length >= 2) {
+      double minLat = points.first.latitude, maxLat = points.first.latitude;
+      double minLng = points.first.longitude, maxLng = points.first.longitude;
+      for (final p in points) {
+        minLat = p.latitude < minLat ? p.latitude : minLat;
+        maxLat = p.latitude > maxLat ? p.latitude : maxLat;
+        minLng = p.longitude < minLng ? p.longitude : minLng;
+        maxLng = p.longitude > maxLng ? p.longitude : maxLng;
+      }
+      final bounds = LatLngBounds(
+        southwest: LatLng(minLat, minLng),
+        northeast: LatLng(maxLat, maxLng),
+      );
+      await c.animateCamera(CameraUpdate.newLatLngBounds(bounds, 64));
+    } else if (_userOrigin != null && _userDestination != null) {
+      final bounds = LatLngBounds(
+        southwest: LatLng(
+          math.min(_userOrigin!.latitude, _userDestination!.latitude),
+          math.min(_userOrigin!.longitude, _userDestination!.longitude),
+        ),
+        northeast: LatLng(
+          math.max(_userOrigin!.latitude, _userDestination!.latitude),
+          math.max(_userOrigin!.longitude, _userDestination!.longitude),
+        ),
+      );
+      await c.animateCamera(CameraUpdate.newLatLngBounds(bounds, 64));
+    }
+  }
+
+  /// Optional: resolve a friendly station name for the chip/text fields
+  String? _nearestStationName(LatLng p) {
+    StationNode? best;
+    double bestD = double.infinity;
+    for (final s in _graph.stationMap.values) {
+      final d = Geolocator.distanceBetween(
+          p.latitude, p.longitude, s.pos.latitude, s.pos.longitude);
+      if (d < bestD) {
+        bestD = d;
+        best = s;
+      }
+    }
+    return best?.name;
   }
 
   Future<bool> _guardMetroHours() async {

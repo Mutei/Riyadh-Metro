@@ -449,5 +449,25 @@
   "Typical": "اعتيادي",
   "This trip: stop-to-stop": "هذه الرحلة: من محطة لأخرى",
   "Segment times": "أوقات المقاطع",
-  "Not logged in": "لم يتم تسجيل الدخول"
+  "Not logged in": "لم يتم تسجيل الدخول",
+  "bot.title": "درب بوت",
+  "bot.welcome": "مرحباً! أستطيع مساعدتك في درب. جرّب \"أقرب محطة\"، \"حالة الخط البنفسجي\"، أو \"من المركز المالي إلى قصر الحكم\".",
+  "bot.typeYourMessage": "اكتب رسالتك",
+  "bot.nearestStation": "أقرب محطة",
+  "bot.fromTo": "من / إلى",
+  "bot.lineStatus": "حالة الخط",
+  "bot.locationPermissionDenied": "تم رفض إذن الموقع. فعّله للعثور على أقرب محطة.",
+  "bot.noStations": "لا توجد بيانات محطات.",
+  "bot.noStatus": "لا يوجد تحديثات حالة حالياً.",
+  "bot.fetchError": "تعذّر جلب الحالة.",
+  "bot.noStatusLine": "لا توجد حالة لهذا الخط.",
+  "bot.unableToLocate": "عذرًا، تعذّر الحصول على موقعك.",
+  "bot.nearestStationFound": "أقرب محطة هي {station}، تبعد تقريبًا {distance} متر.",
+  "bot.showOnMap": "عرض على الخريطة",
+  "bot.openOnMap": "فتح على الخريطة",
+  "bot.routePlanning": "تخطيط من {from} إلى {to}...",
+  "bot.routeNotFound": "تعذّر مطابقة إحدى المحطّتين. حاول أسماء دقيقة (مثل \"المركز المالي\"، \"قصر الحكم\").",
+  "bot.tryExamples": "جرّب الآن: \"أقرب محطة\"، \"حالة الخط البنفسجي\"، أو \"من المركز المالي إلى قصر الحكم\".",
+  "drawer.darbBot": "درب بوت"
+
 }

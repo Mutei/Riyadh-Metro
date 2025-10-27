@@ -451,5 +451,25 @@
       "Typical": "Typical",
       "This trip: stop-to-stop": "This trip: stop-to-stop",
       "Segment times": "Segment times",
-      "Not logged in": "Not logged in"
+      "Not logged in": "Not logged in",
+      "bot.title": "Darb Bot",
+      "bot.welcome": "Hi! I can help with Darb. Try “Nearest station”, “Purple line status”, or “from KAFD to Qasr Al Hokm”.",
+      "bot.typeYourMessage": "Type your message",
+      "bot.nearestStation": "Nearest station",
+      "bot.fromTo": "From / To",
+      "bot.lineStatus": "Line status",
+      "bot.locationPermissionDenied": "Location permission denied. Enable it to find your nearest station.",
+      "bot.noStations": "No stations data found.",
+      "bot.noStatus": "No status available yet.",
+      "bot.fetchError": "Couldn’t fetch status.",
+      "bot.noStatusLine": "No status for this line.",
+      "bot.unableToLocate": "Sorry, I couldn’t get your location.",
+      "bot.nearestStationFound": "Nearest station is {station}, about {distance} m away.",
+      "bot.showOnMap": "Show on Map",
+      "bot.openOnMap": "Open on Map",
+      "bot.routePlanning": "Planning from {from} to {to}...",
+      "bot.routeNotFound": "I couldn’t match one of the stations. Try exact names (e.g., “KAFD”, “Qasr Al Hokm”).",
+      "bot.tryExamples": "For now, try: “Nearest station”, “Purple line status”, or “from KAFD to Qasr Al Hokm”.",
+      "drawer.darbBot": "Darb Bot"
+
   }

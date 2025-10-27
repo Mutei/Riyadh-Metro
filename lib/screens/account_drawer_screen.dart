@@ -7,6 +7,7 @@ import 'package:darb/utils/logout_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../localization/language_constants.dart';
 
+import 'chat_bot_screen.dart';
 import 'language_screen.dart';
 import 'personal_info_screen.dart';
 import 'travel_history_screen.dart';
@@ -155,6 +156,18 @@ class AccountDrawerScreen extends StatelessWidget {
                 trailing: Icon(Icons.open_in_new_rounded,
                     color: cs.onSurface.withOpacity(0.45)),
                 onTap: () {},
+              ),
+              DrawerTile(
+                icon: Icons.smart_toy_rounded,
+                title:
+                    getTranslated(context, 'drawer.darbBot') == 'drawer.darbBot'
+                        ? 'Darb Bot'
+                        : getTranslated(context, 'drawer.darbBot'),
+                onTap: () {
+                  Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const ChatBotScreen()),
+                  );
+                },
               ),
               DrawerTile(
                 icon: Icons.info_outline_rounded,
