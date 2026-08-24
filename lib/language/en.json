@@ -470,6 +470,10 @@
       "bot.routePlanning": "Planning from {from} to {to}...",
       "bot.routeNotFound": "I couldn’t match one of the stations. Try exact names (e.g., “KAFD”, “Qasr Al Hokm”).",
       "bot.tryExamples": "For now, try: “Nearest station”, “Purple line status”, or “from KAFD to Qasr Al Hokm”.",
-      "drawer.darbBot": "Darb Bot"
+    "drawer.darbBot": "Darb Bot",
+    "trip.pdf.export": "Export PDF",
+    "trip.pdf.generating": "Generating report...",
+    "trip.pdf.ready": "Trip report is ready to save or share.",
+    "trip.pdf.failed": "Could not generate the trip report. Please try again."
 
   }

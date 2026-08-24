@@ -9,6 +9,7 @@ import '../constants/colors.dart';
 import '../localization/language_constants.dart';
 import '../utils/geo_utils.dart'; // kept for other helpers if you use it elsewhere
 import '../services/travel_history_service.dart';
+import '../services/trip_pdf_service.dart';
 
 class TravelHistoryScreen extends StatefulWidget {
   const TravelHistoryScreen({super.key});
@@ -1091,6 +1092,8 @@ class _TripDetailsSheet extends StatefulWidget {
 }
 
 class _TripDetailsSheetState extends State<_TripDetailsSheet> {
+  bool _exportingPdf = false;
+
   bool _isArabic(BuildContext ctx) =>
       Localizations.localeOf(ctx).languageCode.toLowerCase().startsWith('ar');
 
@@ -1162,6 +1165,46 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
         return const Color(0xFF7B1FA2);
       default:
         return const Color(0xFF00897B);
+    }
+  }
+
+  Future<void> _exportTripPdf() async {
+    if (_exportingPdf) return;
+
+    setState(() => _exportingPdf = true);
+    final entry = widget.entry;
+    try {
+      await TripPdfService.instance.exportAndShare(
+        TripPdfReportData(
+          id: entry.id,
+          mode: entry.mode,
+          originLabel: entry.originLabel ?? '',
+          destinationLabel: entry.destLabel ?? '',
+          durationSeconds: entry.durationSeconds,
+          distanceMeters: entry.distanceMeters,
+          startedAt: entry.startedAt,
+          finishedAt: entry.finishedAt,
+          metroLineKeys: entry.metroLineKeys ?? const [],
+          fromStation: entry.fromStation,
+          toStation: entry.toStation,
+          languageCode: Localizations.localeOf(context).languageCode,
+        ),
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(getTranslated(context, 'trip.pdf.ready'))),
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Trip PDF export failed: $error\n$stackTrace');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(getTranslated(context, 'trip.pdf.failed')),
+          backgroundColor: Theme.of(context).colorScheme.error,
+        ),
+      );
+    } finally {
+      if (mounted) setState(() => _exportingPdf = false);
     }
   }
 
@@ -1251,6 +1294,25 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
             const SizedBox(height: 14),
 
             // Actions
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _exportingPdf ? null : _exportTripPdf,
+                icon: _exportingPdf
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.picture_as_pdf_outlined),
+                label: Text(
+                  _exportingPdf
+                      ? getTranslated(context, 'trip.pdf.generating')
+                      : getTranslated(context, 'trip.pdf.export'),
+                ),
+              ),
+            ),
+            const SizedBox(height: 10),
             Row(
               children: [
                 Expanded(

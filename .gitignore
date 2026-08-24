@@ -29,7 +29,8 @@ migrate_working_dir/
 .flutter-plugins-dependencies
 .pub-cache/
 android/app/src/main/AndroidManifest.xml
-firebase.json
+!firebase.json
+functions/node_modules/
 android/app/google-services.json
 assets
 .pub/
