@@ -26,6 +26,8 @@ enum _Lang { en, ar }
 
 enum _WhichTarget { origin, destination }
 
+enum _TripStatistic { average, fastest, slowest }
+
 class _ChatBotScreenState extends State<ChatBotScreen> {
   // ---------------- State ----------------
   final _ctrl = TextEditingController();
@@ -230,11 +232,61 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     final timeSuggestions = _tripTimeSuggestions(_ctrl.text);
 
     return Scaffold(
+      backgroundColor: cs.surface,
       appBar: AppBar(
-        title: Text(
-          _localeIsArabic ? 'درب بوت' : 'Darb Bot',
-          style: t.titleLarge?.copyWith(fontWeight: FontWeight.w700),
+        toolbarHeight: 76,
+        titleSpacing: 8,
+        title: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: cs.primary,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: cs.primary.withOpacity(.22),
+                    blurRadius: 14,
+                    offset: const Offset(0, 5),
+                  ),
+                ],
+              ),
+              child: Icon(Icons.subway_rounded, color: cs.onPrimary),
+            ),
+            const SizedBox(width: 11),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    _localeIsArabic ? 'درب بوت' : 'Darb Bot',
+                    style: t.titleLarge?.copyWith(fontWeight: FontWeight.w800),
+                  ),
+                  const SizedBox(height: 1),
+                  Text(
+                    _localeIsArabic
+                        ? 'مساعدك الذكي للمترو'
+                        : 'Your Riyadh Metro assistant',
+                    style: t.labelSmall?.copyWith(
+                      color: cs.onSurface.withOpacity(.62),
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
+        actions: [
+          IconButton(
+            tooltip: _localeIsArabic ? 'أدوات سريعة' : 'Quick tools',
+            onPressed: _showToolsSheet,
+            icon: const Icon(Icons.tune_rounded),
+          ),
+          const SizedBox(width: 4),
+        ],
       ),
       body: Column(
         children: [
@@ -242,10 +294,17 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
             child: ListView.separated(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
               reverse: true,
-              itemCount: _messages.length,
+              itemCount: _messages.length + (_busy ? 1 : 0),
               separatorBuilder: (_, __) => const SizedBox(height: 8),
               itemBuilder: (_, i) {
-                final msg = _messages[_messages.length - 1 - i];
+                if (_busy && i == 0) {
+                  return Align(
+                    alignment: AlignmentDirectional.centerStart,
+                    child: _TypingIndicator(isArabic: _replyLang() == _Lang.ar),
+                  );
+                }
+                final messageIndex = _messages.length - 1 - (_busy ? i - 1 : i);
+                final msg = _messages[messageIndex];
                 final bubbleColor = msg.isMe
                     ? (AppColors.kPrimaryColor.withOpacity(.10))
                     : (Theme.of(context).inputDecorationTheme.fillColor ??
@@ -281,6 +340,35 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                           ? CrossAxisAlignment.end
                           : CrossAxisAlignment.start,
                       children: [
+                        if (!msg.isMe) ...[
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 22,
+                                height: 22,
+                                decoration: BoxDecoration(
+                                  color: cs.primary,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  Icons.subway_rounded,
+                                  color: cs.onPrimary,
+                                  size: 14,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                _localeIsArabic ? 'درب' : 'Darb',
+                                style: t.labelSmall?.copyWith(
+                                  color: cs.onSurface.withOpacity(.58),
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 5),
+                        ],
                         _MsgBubble(
                           lang: msg.lang,
                           bubbleColor: bubbleColor,
@@ -289,12 +377,29 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                           textStyle:
                               t.bodyMedium?.copyWith(color: cs.onSurface),
                         ),
+                        if (msg.estimate != null) ...[
+                          const SizedBox(height: 8),
+                          _TripAnalyticsCard(
+                            estimate: msg.estimate!,
+                            from: msg.lang == _Lang.ar ? msg.fromAr! : msg.fromEn!,
+                            to: msg.lang == _Lang.ar ? msg.toAr! : msg.toEn!,
+                            statistic: msg.statistic!,
+                            isArabic: msg.lang == _Lang.ar,
+                          ),
+                        ],
                         if (msg.action != null) ...[
                           const SizedBox(height: 6),
                           OutlinedButton.icon(
                             icon: Icon(msg.action!.icon, size: 18),
                             label: Text(actionLabel!),
                             onPressed: msg.action!.onTap,
+                          ),
+                        ],
+                        if (_messages.length == 1 && messageIndex == 0) ...[
+                          const SizedBox(height: 12),
+                          _WelcomePanel(
+                            isArabic: _localeIsArabic,
+                            onPrompt: _insertQuestionSuggestion,
                           ),
                         ],
                       ],
@@ -305,117 +410,48 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
             ),
           ),
 
-          // -------- Quick chips (core) --------
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 6),
-            child: SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  if (_recentRoutes.isNotEmpty) ...[
-                    const SizedBox(width: 12),
-                    const _DividerDot(),
-                    const SizedBox(width: 12),
-                    ..._recentRoutes
-                        .map((r) => Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: _chip(
-                                icon: Icons.history_rounded,
-                                label: _localeIsArabic
-                                    ? 'من ${_short(r.$1)} → ${_short(r.$2)}'
-                                    : 'From ${_short(r.$1)} → ${_short(r.$2)}',
-                                onTap: _busy
-                                    ? null
-                                    : () => _handleRouteRequest(r.$1, r.$2),
-                              ),
-                            ))
-                        .toList(),
-                  ],
-                  _chip(
-                    icon: Icons.location_searching_rounded,
-                    label: _localeIsArabic ? 'أقرب محطة' : 'Nearest station',
-                    onTap: _busy ? null : _handleNearestStation,
-                  ),
-                  const SizedBox(width: 8),
-                  _chip(
-                    icon: Icons.route_rounded,
-                    label: _localeIsArabic ? 'من / إلى' : 'From / To',
-                    onTap: () {
-                      _addBotText(
-                        'Type: from <start> to <end>',
-                        'اكتب: من <البداية> إلى <الوجهة>',
-                        lang: _replyLang(),
-                      );
-                      _ctrl.text = _replyLang() == _Lang.ar ? 'من ' : 'from ';
-                      _ctrl.selection = TextSelection.fromPosition(
-                        TextPosition(offset: _ctrl.text.length),
-                      );
-                      _inputFocus.requestFocus();
-                    },
-                  ),
-                  const SizedBox(width: 8),
-                  _chip(
-                    icon: Icons.info_rounded,
-                    label: _localeIsArabic ? 'ساعات المترو' : 'Metro hours',
-                    onTap: _busy ? null : _handleHours,
-                  ),
-                  const SizedBox(width: 8),
-                  _chip(
-                    icon: Icons.schedule_rounded,
-                    label: _localeIsArabic ? 'وقت الرحلة' : 'Trip time',
-                    onTap: _busy
-                        ? null
-                        : () => _insertQuestionSuggestion(
-                              _localeIsArabic
-                                  ? 'كم تستغرق الرحلة من '
-                                  : 'How long does it take from ',
-                            ),
-                  ),
-                  const SizedBox(width: 8),
-                  _chip(
-                    icon: Icons.my_location_rounded,
-                    label: _localeIsArabic
-                        ? 'اجعل موقعي البداية'
-                        : 'Use my location (from)',
-                    onTap: _busy ? null : _useMyLocationAsOrigin,
-                  ),
-                  const SizedBox(width: 8),
-                  _chip(
-                    icon: Icons.flag_circle_rounded,
-                    label: _localeIsArabic
-                        ? 'اجعل موقعي الوجهة'
-                        : 'Use my location (to)',
-                    onTap: _busy ? null : _useMyLocationAsDestination,
-                  ),
-                  const SizedBox(width: 8),
-                  _chip(
-                    icon: Icons.swap_vert_rounded,
-                    label: _localeIsArabic ? 'تبديل من/إلى' : 'Swap From/To',
-                    onTap: _swapFromTo,
-                  ),
-                ],
-              ),
-            ),
-          ),
-
           if (timeSuggestions.isNotEmpty)
-            SizedBox(
-              height: 42,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                itemCount: timeSuggestions.length,
-                separatorBuilder: (_, __) => const SizedBox(width: 8),
-                itemBuilder: (_, index) => ActionChip(
-                  avatar: const Icon(Icons.auto_awesome_rounded, size: 16),
-                  label: Text(
-                    timeSuggestions[index],
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  onPressed: _busy
-                      ? null
-                      : () => _insertQuestionSuggestion(timeSuggestions[index]),
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              child: Padding(
+                key: ValueKey(timeSuggestions.join()),
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.auto_awesome_rounded, size: 16, color: cs.primary),
+                        const SizedBox(width: 6),
+                        Text(
+                          _localeIsArabic ? 'اقتراحات ذكية' : 'Smart suggestions',
+                          style: t.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                        ),
+                        const Spacer(),
+                        TextButton(
+                          onPressed: _showToolsSheet,
+                          child: Text(_localeIsArabic ? 'أدوات' : 'Tools'),
+                        ),
+                      ],
+                    ),
+                    SizedBox(
+                      height: 48,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: timeSuggestions.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 8),
+                        itemBuilder: (_, index) => _SuggestionCard(
+                          label: timeSuggestions[index],
+                          icon: _suggestionIcon(timeSuggestions[index]),
+                          onTap: _busy
+                              ? null
+                              : () => _insertQuestionSuggestion(
+                                    timeSuggestions[index],
+                                  ),
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -425,8 +461,26 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
             top: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-              child: Row(
-                children: [
+              child: Container(
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: cs.surfaceContainerHighest.withOpacity(.62),
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(color: cs.outline.withOpacity(.28)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(
+                        Theme.of(context).brightness == Brightness.dark
+                            ? .12
+                            : .05,
+                      ),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
                   // Mic (press & hold)
                   GestureDetector(
                     onLongPressStart: (_) {
@@ -486,6 +540,8 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                         _handleChanged(val);
                         _persistDraft(); // live-persist draft as they type
                       },
+                      minLines: 1,
+                      maxLines: 4,
                       decoration: InputDecoration(
                         hintText:
                             getTranslated(context, 'bot.typeYourMessage') ==
@@ -497,8 +553,17 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                         filled: true,
                         border: OutlineInputBorder(
                           borderRadius: BorderRadius.circular(26),
-                          borderSide: BorderSide(color: cs.outline),
+                          borderSide: BorderSide.none,
                         ),
+                        enabledBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(26),
+                          borderSide: BorderSide.none,
+                        ),
+                        focusedBorder: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(26),
+                          borderSide: BorderSide(color: cs.primary.withOpacity(.5)),
+                        ),
+                        fillColor: cs.surface,
                         contentPadding: const EdgeInsets.symmetric(
                             horizontal: 16, vertical: 12),
                       ),
@@ -508,6 +573,11 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
 
                   // Send
                   IconButton.filled(
+                    style: IconButton.styleFrom(
+                      minimumSize: const Size(48, 48),
+                      backgroundColor: cs.primary,
+                      foregroundColor: cs.onPrimary,
+                    ),
                     onPressed: _busy ? null : _send,
                     icon: _busy
                         ? const SizedBox(
@@ -516,33 +586,14 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                             child: CircularProgressIndicator())
                         : const Icon(Icons.send_rounded),
                   ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
         ],
       ),
     );
-  }
-
-  // ---------- UI helpers ----------
-  Widget _chip(
-      {required IconData icon, required String label, VoidCallback? onTap}) {
-    final cs = Theme.of(context).colorScheme;
-    return ActionChip(
-      avatar: Icon(icon, size: 16, color: cs.onSurface),
-      label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
-      onPressed: onTap,
-      shape: StadiumBorder(side: BorderSide(color: cs.outline)),
-      backgroundColor:
-          Theme.of(context).inputDecorationTheme.fillColor ?? cs.surface,
-    );
-  }
-
-  static String _short(String name) {
-    // Keep chips compact
-    const max = 18;
-    return name.length <= max ? name : '${name.substring(0, max - 1)}…';
   }
 
   // ---------- Language helpers ----------
@@ -575,7 +626,11 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
 
     final timeRoute = _extractTripTimeRoute(text);
     if (_isTripTimeIntent(text) && timeRoute != null) {
-      _handleTripTimeRequest(timeRoute.$1, timeRoute.$2);
+      _handleTripTimeRequest(
+        timeRoute.$1,
+        timeRoute.$2,
+        statistic: _tripStatisticFor(text),
+      );
       return;
     }
 
@@ -795,6 +850,13 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         query.contains('how much time') ||
         query.contains('average travel time') ||
         query.contains('average trip time') ||
+        query.contains('fastest') ||
+        query.contains('quickest') ||
+        query.contains('shortest trip') ||
+        query.contains('minimum recorded') ||
+        query.contains('slowest') ||
+        query.contains('longest trip') ||
+        query.contains('maximum recorded') ||
         query.contains('time from') ||
         query.contains('metro trip') ||
         query.contains('take me') ||
@@ -803,7 +865,124 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         query.contains('كم ياخذ') ||
         query.contains('مدة الرحلة') ||
         query.contains('متوسط وقت') ||
-        query.contains('وقت الرحلة');
+        query.contains('وقت الرحلة') ||
+        query.contains('اسرع') ||
+        query.contains('أسرع') ||
+        query.contains('اقصر') ||
+        query.contains('أقصر') ||
+        query.contains('ابطي') ||
+        query.contains('أبطأ') ||
+        query.contains('اطول') ||
+        query.contains('أطول');
+  }
+
+  IconData _suggestionIcon(String suggestion) {
+    final text = _norm(suggestion);
+    if (text.contains('fastest') || text.contains('quickest') || text.contains('اسرع') || text.contains('أسرع')) {
+      return Icons.bolt_rounded;
+    }
+    if (text.contains('slowest') || text.contains('longest') || text.contains('ابطي') || text.contains('أبطأ')) {
+      return Icons.hourglass_bottom_rounded;
+    }
+    return Icons.schedule_rounded;
+  }
+
+  void _showToolsSheet() {
+    final isArabic = _localeIsArabic;
+    showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 4, 18, 22),
+          child: Wrap(
+            runSpacing: 4,
+            children: [
+              Text(
+                isArabic ? 'أدوات سريعة' : 'Quick tools',
+                    style: Theme.of(sheetContext).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        )),
+              const SizedBox(height: 10),
+              _toolTile(
+                sheetContext,
+                icon: Icons.my_location_rounded,
+                label: isArabic ? 'استخدم موقعي كنقطة بداية' : 'Use my location as origin',
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _useMyLocationAsOrigin();
+                },
+              ),
+              _toolTile(
+                sheetContext,
+                icon: Icons.flag_circle_rounded,
+                label: isArabic ? 'استخدم موقعي كوجهة' : 'Use my location as destination',
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _useMyLocationAsDestination();
+                },
+              ),
+              _toolTile(
+                sheetContext,
+                icon: Icons.swap_vert_rounded,
+                label: isArabic ? 'تبديل البداية والوجهة' : 'Swap origin and destination',
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _swapFromTo();
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _toolTile(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+      leading: Container(
+        width: 38,
+        height: 38,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.primaryContainer,
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Icon(icon, color: Theme.of(context).colorScheme.onPrimaryContainer),
+      ),
+      title: Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+      trailing: const Icon(Icons.chevron_right_rounded),
+      onTap: onTap,
+    );
+  }
+
+  _TripStatistic _tripStatisticFor(String raw) {
+    final query = _norm(raw);
+    if (query.contains('fastest') ||
+        query.contains('quickest') ||
+        query.contains('shortest') ||
+        query.contains('minimum') ||
+        query.contains('اسرع') ||
+        query.contains('أسرع') ||
+        query.contains('اقصر') ||
+        query.contains('أقصر')) {
+      return _TripStatistic.fastest;
+    }
+    if (query.contains('slowest') ||
+        query.contains('longest') ||
+        query.contains('maximum') ||
+        query.contains('ابطي') ||
+        query.contains('أبطأ') ||
+        query.contains('اطول') ||
+        query.contains('أطول')) {
+      return _TripStatistic.slowest;
+    }
+    return _TripStatistic.average;
   }
 
   (String, String)? _extractTripTimeRoute(String raw) {
@@ -844,12 +1023,31 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       );
     }
 
+    final enBetween = RegExp(
+      r'\bbetween\s+(.+?)\s+and\s+(.+?)(?:[?!.]|$)',
+      caseSensitive: false,
+    ).firstMatch(raw);
+    if (enBetween != null) {
+      return (
+        _cleanStationQuery(enBetween.group(1)!),
+        _cleanStationQuery(enBetween.group(2)!),
+      );
+    }
+
     final arFromTo =
         RegExp(r'من\s+(.+?)\s+إ?لى\s+(.+?)(?:[؟?.!]|$)').firstMatch(raw);
     if (arFromTo != null) {
       return (
         _cleanStationQuery(arFromTo.group(1)!),
         _cleanStationQuery(arFromTo.group(2)!),
+      );
+    }
+    final arBetween =
+        RegExp(r'بين\s+(.+?)\s+و\s+(.+?)(?:[؟?.!]|$)').firstMatch(raw);
+    if (arBetween != null) {
+      return (
+        _cleanStationQuery(arBetween.group(1)!),
+        _cleanStationQuery(arBetween.group(2)!),
       );
     }
     return null;
@@ -860,7 +1058,11 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       .replaceAll('محطة', '')
       .trim();
 
-  Future<void> _handleTripTimeRequest(String fromTxt, String toTxt) async {
+  Future<void> _handleTripTimeRequest(
+    String fromTxt,
+    String toTxt, {
+    _TripStatistic statistic = _TripStatistic.average,
+  }) async {
     final fromMatches = _stationMatches(fromTxt);
     final toMatches = _stationMatches(toTxt);
     if (fromMatches.isEmpty || toMatches.isEmpty) {
@@ -899,6 +1101,20 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       final fromAr = (from['nameAr'] ?? fromEn).toString();
       final toAr = (to['nameAr'] ?? toEn).toString();
       if (estimate == null) {
+        if (statistic != _TripStatistic.average) {
+          final metric = statistic == _TripStatistic.fastest
+              ? 'fastest recorded trip'
+              : 'slowest recorded trip';
+          final metricAr = statistic == _TripStatistic.fastest
+              ? 'أسرع رحلة مسجلة'
+              : 'أبطأ رحلة مسجلة';
+          _addBotText(
+            'There are not enough completed community trips yet to provide the $metric from $fromEn to $toEn.',
+            'لا توجد رحلات مكتملة كافية من المستخدمين بعد لتقديم $metricAr من $fromAr إلى $toAr.',
+            lang: _replyLang(),
+          );
+          return;
+        }
         final planned = _metroTripTime.estimate(
           fromStation: fromEn,
           toStation: toEn,
@@ -945,15 +1161,62 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       final transferTextAr = estimate.averageTransfers == 0
           ? ''
           : ' التحويلات المعتادة: ${estimate.averageTransfers}.';
-      _addBotText(
-        'Based on ${estimate.sampleCount} completed metro trips, travel from $fromEn to $toEn takes about $average min on average. Typical range: $minimum-$maximum min.$lines$transferText',
-        'استنادًا إلى ${estimate.sampleCount} رحلة مترو مكتملة، تستغرق الرحلة من $fromAr إلى $toAr حوالي $average دقيقة في المتوسط. المدى المعتاد: $minimum-$maximum دقيقة.$linesAr$transferTextAr',
+      final limitedDataEn = estimate.sampleCount <= 3
+          ? ' This result is based on a limited number of completed trips.'
+          : '';
+      final limitedDataAr = estimate.sampleCount <= 3
+          ? ' هذه النتيجة مبنية على عدد محدود من الرحلات المكتملة.'
+          : '';
+      final averageSourceEn = estimate.isCommunityAggregate
+          ? 'community'
+          : 'your recorded';
+      final samplePhraseEn = estimate.isCommunityAggregate
+          ? '${estimate.sampleCount} completed community trips'
+          : '${estimate.sampleCount} of your completed saved trips';
+      final sourceAr = estimate.isCommunityAggregate
+          ? 'المستخدمين'
+          : 'رحلاتك المسجلة';
+      final responseEn = switch (statistic) {
+        _TripStatistic.fastest =>
+          'The fastest trip from $fromEn to $toEn is $minimum min, based on $samplePhraseEn.$lines$limitedDataEn',
+        _TripStatistic.slowest =>
+          'The slowest trip from $fromEn to $toEn is $maximum min, based on $samplePhraseEn.$lines$limitedDataEn',
+        _TripStatistic.average =>
+          'From $fromEn to $toEn, the $averageSourceEn average is $average min across $samplePhraseEn. Typical range: $minimum-$maximum min.$lines$transferText$limitedDataEn',
+      };
+      final responseAr = switch (statistic) {
+        _TripStatistic.fastest =>
+          'أسرع رحلة مسجلة ضمن $sourceAr من $fromAr إلى $toAr هي $minimum دقيقة، استنادًا إلى ${estimate.sampleCount} رحلة مكتملة.$linesAr$limitedDataAr',
+        _TripStatistic.slowest =>
+          'أبطأ رحلة مسجلة ضمن $sourceAr من $fromAr إلى $toAr هي $maximum دقيقة، استنادًا إلى ${estimate.sampleCount} رحلة مكتملة.$linesAr$limitedDataAr',
+        _TripStatistic.average =>
+          'متوسط وقت الرحلة من $fromAr إلى $toAr في $sourceAr هو $average دقيقة عبر ${estimate.sampleCount} رحلة مكتملة. المدى المعتاد: $minimum-$maximum دقيقة.$linesAr$transferTextAr$limitedDataAr',
+      };
+      _addAnalyticsMessage(
+        textEn: responseEn,
+        textAr: responseAr,
+        estimate: estimate,
+        fromEn: fromEn,
+        toEn: toEn,
+        fromAr: fromAr,
+        toAr: toAr,
+        statistic: statistic,
         lang: _replyLang(),
       );
     } catch (_) {
-      _addBotText(
-        'I could not read your trip history right now. Please try again.',
-        'تعذر قراءة سجل رحلاتك الآن. حاول مرة أخرى.',
+      _addBotAction(
+        textEn: 'I could not read the community trip data right now.',
+        textAr: 'تعذر قراءة بيانات رحلات المستخدمين الآن.',
+        action: _MsgAction(
+          icon: Icons.refresh_rounded,
+          labelEn: 'Retry',
+          labelAr: 'إعادة المحاولة',
+          onTap: () => _handleTripTimeRequest(
+            fromTxt,
+            toTxt,
+            statistic: statistic,
+          ),
+        ),
         lang: _replyLang(),
       );
     } finally {
@@ -1062,6 +1325,34 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         _messages.add(_Msg.bot(textEn, textAr, action: action, lang: lang)));
   }
 
+  void _addAnalyticsMessage({
+    required String textEn,
+    required String textAr,
+    required TripTimeEstimate estimate,
+    required String fromEn,
+    required String toEn,
+    required String fromAr,
+    required String toAr,
+    required _TripStatistic statistic,
+    required _Lang lang,
+  }) {
+    setState(() {
+      _messages.add(
+        _Msg.analytics(
+          textEn: textEn,
+          textAr: textAr,
+          estimate: estimate,
+          fromEn: fromEn,
+          toEn: toEn,
+          fromAr: fromAr,
+          toAr: toAr,
+          statistic: statistic,
+          lang: lang,
+        ),
+      );
+    });
+  }
+
   // ===================== Autocomplete logic =====================
   void _handleChanged(String val) {
     if (mounted) setState(() {});
@@ -1146,20 +1437,25 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
 
   List<Map<String, dynamic>> _filterStations(String q) {
     final n = _norm(q);
-    return _allStations
-        .map((s) => {
-              'en': (s['name'] ?? '').toString(),
-              'ar': (s['nameAr'] ?? '').toString(),
-              'lat': s['lat'],
-              'lng': s['lng'],
-            })
-        .where((s) {
-          final en = _norm(s['en'] as String);
-          final ar = _norm(s['ar'] as String);
-          return en.contains(n) || ar.contains(n);
+    if (n.isEmpty) return const [];
+    final scored = _allStations
+        .map((station) {
+          final en = (station['name'] ?? '').toString();
+          final ar = (station['nameAr'] ?? '').toString();
+          return (
+            station: <String, dynamic>{
+              'en': en,
+              'ar': ar,
+              'lat': station['lat'],
+              'lng': station['lng'],
+            },
+            score: _score(n, _norm(en), _norm(ar)),
+          );
         })
-        .take(8)
-        .toList();
+        .where((item) => item.score > 0)
+        .toList()
+      ..sort((a, b) => b.score.compareTo(a.score));
+    return scored.take(8).map((item) => item.station).toList();
   }
 
   List<String> _tripTimeSuggestions(String input) {
@@ -1168,20 +1464,30 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         normalized.contains('long') ||
         normalized.contains('time') ||
         normalized.contains('average') ||
+        normalized.contains('fastest') ||
+        normalized.contains('quickest') ||
+        normalized.contains('shortest') ||
+        normalized.contains('slowest') ||
+        normalized.contains('maximum') ||
+        normalized.contains('minimum') ||
         normalized.contains('كم') ||
         normalized.contains('وقت') ||
-        normalized.contains('مدة');
+        normalized.contains('مدة') ||
+        normalized.contains('اسرع') ||
+        normalized.contains('أسرع') ||
+        normalized.contains('ابطي') ||
+        normalized.contains('أبطأ');
     final isArabic = _replyLang() == _Lang.ar;
     final catalog = isArabic
         ? <String>[
             'كم تستغرق الرحلة من المركز المالي إلى STC؟',
-            'ما متوسط وقت الرحلة من المركز المالي إلى STC؟',
-            'كم تستغرق رحلة المترو من المركز المالي إلى قصر الحكم؟',
+            'ما أسرع رحلة من المركز المالي إلى STC؟',
+            'ما أطول رحلة من المركز المالي إلى STC؟',
           ]
         : <String>[
             'How long does it take from KAFD to STC?',
-            'What is the average travel time from KAFD to STC?',
-            'How long is the metro trip from KAFD to Qasr Al Hokm?',
+            'What is the fastest trip from KAFD to STC?',
+            'What is the longest trip from KAFD to STC?',
           ];
     for (final route in _recentRoutes) {
       catalog.add(isArabic
@@ -1445,16 +1751,71 @@ class _Msg {
   final String textAr;
   final bool isMe;
   final _MsgAction? action;
+  final TripTimeEstimate? estimate;
+  final String? fromEn;
+  final String? toEn;
+  final String? fromAr;
+  final String? toAr;
+  final _TripStatistic? statistic;
   final _Lang lang;
 
-  const _Msg._(this.textEn, this.textAr, this.isMe, this.action, this.lang);
+  const _Msg._(
+    this.textEn,
+    this.textAr,
+    this.isMe,
+    this.action,
+    this.estimate,
+    this.fromEn,
+    this.toEn,
+    this.fromAr,
+    this.toAr,
+    this.statistic,
+    this.lang,
+  );
 
   factory _Msg.user(String en, String ar, {required _Lang lang}) =>
-      _Msg._(en, ar, true, null, lang);
+      _Msg._(en, ar, true, null, null, null, null, null, null, null, lang);
 
   factory _Msg.bot(String en, String ar,
           {_MsgAction? action, required _Lang lang}) =>
-      _Msg._(en, ar, false, action, lang);
+      _Msg._(
+        en,
+        ar,
+        false,
+        action,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        lang,
+      );
+
+  factory _Msg.analytics({
+    required String textEn,
+    required String textAr,
+    required TripTimeEstimate estimate,
+    required String fromEn,
+    required String toEn,
+    required String fromAr,
+    required String toAr,
+    required _TripStatistic statistic,
+    required _Lang lang,
+  }) =>
+      _Msg._(
+        textEn,
+        textAr,
+        false,
+        null,
+        estimate,
+        fromEn,
+        toEn,
+        fromAr,
+        toAr,
+        statistic,
+        lang,
+      );
 }
 
 class _MsgAction {
@@ -1476,16 +1837,319 @@ class _Nearest {
   const _Nearest({required this.station, required this.distanceMeters});
 }
 
-class _DividerDot extends StatelessWidget {
-  const _DividerDot({super.key});
+class _SuggestionCard extends StatelessWidget {
+  final String label;
+  final IconData icon;
+  final VoidCallback? onTap;
+
+  const _SuggestionCard({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+  });
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    return Material(
+      color: cs.primaryContainer.withOpacity(.52),
+      borderRadius: BorderRadius.circular(16),
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(16),
+        child: Container(
+          width: 228,
+          padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 8),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: cs.primary.withOpacity(.18)),
+          ),
+          child: Row(
+            children: [
+              Icon(icon, size: 18, color: cs.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: cs.onSurface,
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _WelcomePanel extends StatelessWidget {
+  final bool isArabic;
+  final ValueChanged<String> onPrompt;
+
+  const _WelcomePanel({required this.isArabic, required this.onPrompt});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final tripTimePrompt = isArabic
+        ? 'كم تستغرق الرحلة من المركز المالي إلى STC؟'
+        : 'How long does it take from KAFD to STC?';
     return Container(
-      width: 6,
-      height: 6,
+      padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-          color: cs.outlineVariant, borderRadius: BorderRadius.circular(3)),
+        gradient: LinearGradient(
+          colors: [
+            cs.primaryContainer.withOpacity(.82),
+            cs.secondaryContainer.withOpacity(.5),
+          ],
+          begin: AlignmentDirectional.topStart,
+          end: AlignmentDirectional.bottomEnd,
+        ),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: cs.primary.withOpacity(.16)),
+      ),
+      child: Directionality(
+        textDirection: isArabic ? ui.TextDirection.rtl : ui.TextDirection.ltr,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              isArabic ? 'ابدأ رحلتك بذكاء' : 'Plan your journey with confidence',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    color: cs.onSurface,
+                    fontWeight: FontWeight.w900,
+                  ),
+            ),
+            const SizedBox(height: 5),
+            Text(
+              isArabic
+                  ? 'اسأل عن المسارات، أقرب محطة، أو أوقات الرحلات الفعلية.'
+                  : 'Ask about routes, nearby stations, or real trip times.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: cs.onSurface.withOpacity(.72),
+                    height: 1.35,
+                  ),
+            ),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 6,
+              children: [
+                ActionChip(
+                  avatar: const Icon(Icons.schedule_rounded, size: 16),
+                  label: Text(isArabic ? 'وقت الرحلة' : 'Trip time'),
+                  onPressed: () => onPrompt(tripTimePrompt),
+                ),
+                ActionChip(
+                  avatar: const Icon(Icons.location_searching_rounded, size: 16),
+                  label: Text(isArabic ? 'أقرب محطة' : 'Nearest station'),
+                  onPressed: () => onPrompt(isArabic ? 'أقرب محطة' : 'Nearest station'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TypingIndicator extends StatelessWidget {
+  final bool isArabic;
+
+  const _TypingIndicator({required this.isArabic});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    return TweenAnimationBuilder<double>(
+      duration: const Duration(milliseconds: 700),
+      tween: Tween(begin: .45, end: 1),
+      curve: Curves.easeInOut,
+      builder: (context, opacity, _) => Opacity(
+        opacity: opacity,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
+          decoration: BoxDecoration(
+            color: cs.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: cs.outline.withOpacity(.2)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.subway_rounded, size: 16, color: cs.primary),
+              const SizedBox(width: 7),
+              Text(
+                isArabic ? 'درب يكتب...' : 'Darb is thinking...',
+                style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                      color: cs.onSurface.withOpacity(.72),
+                      fontWeight: FontWeight.w700,
+                    ),
+              ),
+              const SizedBox(width: 8),
+              ...List.generate(
+                3,
+                (index) => Container(
+                  width: 4,
+                  height: 4,
+                  margin: const EdgeInsets.symmetric(horizontal: 1.5),
+                  decoration: BoxDecoration(
+                    color: cs.primary.withOpacity(.45 + index * .16),
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _TripAnalyticsCard extends StatelessWidget {
+  final TripTimeEstimate estimate;
+  final String from;
+  final String to;
+  final _TripStatistic statistic;
+  final bool isArabic;
+
+  const _TripAnalyticsCard({
+    required this.estimate,
+    required this.from,
+    required this.to,
+    required this.statistic,
+    required this.isArabic,
+  });
+
+  int _minutes(int seconds) => (seconds / 60).round();
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final average = _minutes(estimate.averageSeconds);
+    final fastest = _minutes(estimate.minimumSeconds);
+    final slowest = _minutes(estimate.maximumSeconds);
+    final focus = switch (statistic) {
+      _TripStatistic.average => average,
+      _TripStatistic.fastest => fastest,
+      _TripStatistic.slowest => slowest,
+    };
+    final focusLabel = switch (statistic) {
+      _TripStatistic.average => isArabic ? 'المتوسط' : 'Average',
+      _TripStatistic.fastest => isArabic ? 'الأسرع' : 'Fastest',
+      _TripStatistic.slowest => isArabic ? 'الأبطأ' : 'Slowest',
+    };
+
+    return Directionality(
+      textDirection: isArabic ? ui.TextDirection.rtl : ui.TextDirection.ltr,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(13),
+        decoration: BoxDecoration(
+          color: cs.primaryContainer.withOpacity(.56),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: cs.primary.withOpacity(.24)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.insights_rounded, size: 18, color: cs.primary),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    '$from  →  $to',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                          fontWeight: FontWeight.w900,
+                        ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: cs.primary,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Row(
+                children: [
+                  Text(
+                    focusLabel,
+                    style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                          color: cs.onPrimary.withOpacity(.82),
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const Spacer(),
+                  Text(
+                    '$focus ${isArabic ? 'دقيقة' : 'min'}',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: cs.onPrimary,
+                          fontWeight: FontWeight.w900,
+                        ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(child: _metric(context, isArabic ? 'المتوسط' : 'Average', average)),
+                Expanded(child: _metric(context, isArabic ? 'الأسرع' : 'Fastest', fastest)),
+                Expanded(child: _metric(context, isArabic ? 'الأبطأ' : 'Slowest', slowest)),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              isArabic
+                  ? 'استنادًا إلى ${estimate.sampleCount} رحلة مكتملة'
+                  : 'Based on ${estimate.sampleCount} completed trips',
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: cs.onSurface.withOpacity(.62),
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _metric(BuildContext context, String label, int value) {
+    final cs = Theme.of(context).colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: cs.onSurface.withOpacity(.62),
+                fontWeight: FontWeight.w700,
+              ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          '$value ${isArabic ? 'د' : 'm'}',
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w900,
+              ),
+        ),
+      ],
     );
   }
 }

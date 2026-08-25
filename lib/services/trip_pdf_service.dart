@@ -433,8 +433,14 @@ class TripPdfService {
       details.add('${copy.line}: ${segment.lineKey}');
     if (segment.seconds > 0)
       details.add(_formatDuration(segment.seconds, copy, isArabic));
-    if (segment.startedAt != null)
+    if (segment.startedAt != null && segment.finishedAt != null) {
+      details.add(
+        '${_formatTime(segment.startedAt!, isArabic)}-'
+        '${_formatTime(segment.finishedAt!, isArabic)}',
+      );
+    } else if (segment.startedAt != null) {
       details.add(_formatTime(segment.startedAt!, isArabic));
+    }
     return details.isEmpty ? copy.noAdditionalDetails : details.join(' | ');
   }
 
