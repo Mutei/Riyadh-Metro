@@ -8,6 +8,8 @@ import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:share_plus/share_plus.dart';
 
+import '../latlon/latlong_stations.dart' as metro;
+
 /// Builds the original clean, structured trip report from actual stored data.
 class TripPdfService {
   TripPdfService._();
@@ -22,11 +24,52 @@ class TripPdfService {
   static const _border = PdfColor.fromInt(0xFFD9E6E2);
 
   Future<pw.Font>? _arabicFont;
+  static final Map<String, String> _arabicStationNames =
+      _buildArabicStationNames();
+
+  static Map<String, String> _buildArabicStationNames() {
+    final names = <String, String>{};
+    final lines = <List<Map<String, dynamic>>>[
+      metro.blueStations,
+      metro.redStations,
+      metro.greenStations,
+      metro.orangeStations,
+      metro.purpleStations,
+      metro.yellowStations,
+    ];
+    for (final line in lines) {
+      for (final station in line) {
+        final name = station['name']?.toString() ?? '';
+        final nameAr = station['nameAr']?.toString() ?? '';
+        if (name.isNotEmpty && nameAr.isNotEmpty) {
+          names[_normalizeStationName(name)] = nameAr;
+        }
+      }
+    }
+    return names;
+  }
+
+  static String _normalizeStationName(String value) => value
+      .toLowerCase()
+      .replaceAll(RegExp(r'\b(station|metro)\b'), '')
+      .replaceAll(RegExp(r'[^a-z0-9]+'), ' ')
+      .trim();
+
+  String _stationName(String? value, _TripPdfCopy copy) {
+    final resolved = _orUnknown(value, copy);
+    if (!copy.arabic || RegExp(r'[\u0600-\u06FF]').hasMatch(resolved)) {
+      return resolved;
+    }
+    return _arabicStationNames[_normalizeStationName(resolved)] ?? resolved;
+  }
 
   Future<File> generateTripReport(TripPdfReportData trip) async {
     final segments = await _loadSegments(trip.id);
+    final transfers = await _loadTransfers(trip.id);
     final file = await _reportFile(trip);
-    await file.writeAsBytes(await _buildPdf(trip, segments), flush: true);
+    await file.writeAsBytes(
+        await _buildPdf(trip, _timelineRows(segments, transfers)),
+        flush: true);
     return file;
   }
 
@@ -88,12 +131,124 @@ class TripPdfService {
     return segments;
   }
 
+  Future<List<TripPdfTransfer>> _loadTransfers(String tripId) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return const [];
+
+    dynamic raw;
+    try {
+      raw = (await FirebaseDatabase.instance
+              .ref('App/TravelHistory/$uid/$tripId/metroTransfers')
+              .get())
+          .value;
+    } catch (_) {
+      return const [];
+    }
+    if (raw is! Map) return const [];
+
+    final transfers = <TripPdfTransfer>[];
+    raw.forEach((key, value) {
+      if (value is! Map) return;
+      final data = Map<Object?, Object?>.from(value);
+      transfers.add(TripPdfTransfer(
+        id: key.toString(),
+        station: (data['station'] ?? '').toString(),
+        fromLineKey: (data['fromLineKey'] ?? '').toString(),
+        toLineKey: (data['toLineKey'] ?? '').toString(),
+        seconds: (data['seconds'] as num?)?.toInt() ?? 0,
+        startedAt: _dateFrom(data['startedAt']),
+        finishedAt: _dateFrom(data['finishedAt']),
+      ));
+    });
+    transfers.sort((a, b) {
+      final aTime = a.startedAt?.millisecondsSinceEpoch ?? 0;
+      final bTime = b.startedAt?.millisecondsSinceEpoch ?? 0;
+      return aTime == bTime ? a.id.compareTo(b.id) : aTime.compareTo(bTime);
+    });
+    return transfers;
+  }
+
+  List<_TripPdfTimelineRow> _timelineRows(
+    List<TripPdfSegment> segments,
+    List<TripPdfTransfer> storedTransfers,
+  ) {
+    final rows = <_TripPdfTimelineRow>[];
+    var index = 0;
+    while (index < segments.length) {
+      final segment = segments[index];
+      if (!_sameStation(segment.fromStation, segment.toStation)) {
+        rows.add(_TripPdfTimelineRow.segment(segment));
+        index++;
+        continue;
+      }
+
+      // Older trips stored an interchange as one or more zero-distance metro
+      // segments. Collapse only a proven run between two different lines.
+      var runEnd = index;
+      while (runEnd + 1 < segments.length &&
+          _sameStation(segments[runEnd + 1].fromStation, segment.fromStation) &&
+          _sameStation(segments[runEnd + 1].toStation, segment.fromStation)) {
+        runEnd++;
+      }
+      final beforeLine = _previousMovementLine(segments, index);
+      final afterLine = _nextMovementLine(segments, runEnd + 1);
+      if (beforeLine != null && afterLine != null && beforeLine != afterLine) {
+        final run = segments.sublist(index, runEnd + 1);
+        rows.add(_TripPdfTimelineRow.transfer(TripPdfTransfer(
+          id: run.first.id,
+          station: segment.fromStation,
+          fromLineKey: beforeLine,
+          toLineKey: afterLine,
+          seconds: run.fold<int>(0, (total, item) => total + item.seconds),
+          startedAt: run.first.startedAt,
+          finishedAt: run.last.finishedAt,
+        )));
+        index = runEnd + 1;
+        continue;
+      }
+
+      // A same-name record without an adjacent line change may be genuine
+      // historical data, so preserve it instead of silently dropping it.
+      rows.add(_TripPdfTimelineRow.segment(segment));
+      index++;
+    }
+    rows.addAll(storedTransfers.map(_TripPdfTimelineRow.transfer));
+    rows.sort((a, b) {
+      final aTime = a.startedAt?.millisecondsSinceEpoch ?? 0;
+      final bTime = b.startedAt?.millisecondsSinceEpoch ?? 0;
+      return aTime == bTime ? a.id.compareTo(b.id) : aTime.compareTo(bTime);
+    });
+    return rows;
+  }
+
+  bool _sameStation(String first, String second) =>
+      first.trim().toLowerCase() == second.trim().toLowerCase() &&
+      first.trim().isNotEmpty;
+
+  String? _previousMovementLine(List<TripPdfSegment> segments, int before) {
+    for (var i = before - 1; i >= 0; i--) {
+      if (!_sameStation(segments[i].fromStation, segments[i].toStation)) {
+        return segments[i].lineKey.trim().toLowerCase();
+      }
+    }
+    return null;
+  }
+
+  String? _nextMovementLine(List<TripPdfSegment> segments, int after) {
+    for (var i = after; i < segments.length; i++) {
+      if (!_sameStation(segments[i].fromStation, segments[i].toStation)) {
+        return segments[i].lineKey.trim().toLowerCase();
+      }
+    }
+    return null;
+  }
+
   DateTime? _dateFrom(dynamic value) =>
       value is num ? DateTime.fromMillisecondsSinceEpoch(value.toInt()) : null;
 
   Future<List<int>> _buildPdf(
     TripPdfReportData trip,
-    List<TripPdfSegment> segments,
+    List<_TripPdfTimelineRow> timelineRows,
   ) async {
     final copy = _TripPdfCopy.forLanguage(trip.languageCode);
     final isArabic = copy.arabic;
@@ -132,10 +287,10 @@ class TripPdfService {
           pw.SizedBox(height: 20),
           _sectionTitle(copy.tripTimeline, isArabic),
           pw.SizedBox(height: 10),
-          if (segments.isEmpty)
+          if (timelineRows.isEmpty)
             _emptyTimeline(copy, isArabic)
           else
-            ...segments.asMap().entries.map(
+            ...timelineRows.asMap().entries.map(
                   (entry) => _timelineItem(
                     entry.value,
                     entry.key + 1,
@@ -204,19 +359,20 @@ class TripPdfService {
               style: const pw.TextStyle(color: PdfColors.white, fontSize: 10)),
           pw.SizedBox(height: 16),
           pw.Wrap(spacing: 8, runSpacing: 8, children: [
-            _heroPill('${copy.reference}: ${trip.id}'),
-            _heroPill('${copy.mode}: ${copy.modeLabel(trip.mode)}'),
+            _heroPill('${copy.reference}: ${trip.id}', isArabic),
+            _heroPill('${copy.mode}: ${copy.modeLabel(trip.mode)}', isArabic),
           ]),
         ]),
       );
 
-  pw.Widget _heroPill(String value) => pw.Container(
+  pw.Widget _heroPill(String value, bool isArabic) => pw.Container(
         padding: const pw.EdgeInsets.symmetric(horizontal: 9, vertical: 5),
         decoration: pw.BoxDecoration(
           color: PdfColor.fromInt(0x24FFFFFF),
           borderRadius: pw.BorderRadius.circular(999),
         ),
-        child: pw.Text(value,
+        child: _text(value,
+            isArabic: isArabic,
             style: const pw.TextStyle(color: PdfColors.white, fontSize: 8.5)),
       );
 
@@ -276,7 +432,7 @@ class TripPdfService {
       TripPdfReportData trip, _TripPdfCopy copy, bool isArabic) {
     final lineNames = trip.metroLineKeys.isEmpty
         ? copy.notAvailable
-        : trip.metroLineKeys.join(isArabic ? '، ' : ', ');
+        : trip.metroLineKeys.map(copy.lineName).join(isArabic ? '، ' : ', ');
     return pw.Container(
       padding: const pw.EdgeInsets.all(16),
       decoration: pw.BoxDecoration(
@@ -285,23 +441,23 @@ class TripPdfService {
       ),
       child:
           pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-        _routeStop(copy.origin, _orUnknown(trip.originLabel, copy), isArabic,
+        _routeStop(copy.origin, _stationName(trip.originLabel, copy), isArabic,
             isStart: true),
         pw.Container(
             width: 1.2,
             height: 18,
             margin: const pw.EdgeInsets.only(left: 7),
             color: _border),
-        _routeStop(
-            copy.destination, _orUnknown(trip.destinationLabel, copy), isArabic,
+        _routeStop(copy.destination, _stationName(trip.destinationLabel, copy),
+            isArabic,
             isStart: false),
         if (trip.mode == 'metro') ...[
           pw.SizedBox(height: 16),
           _detailRow(copy.metroLines, lineNames, isArabic),
           _detailRow(
-              copy.fromStation, _orUnknown(trip.fromStation, copy), isArabic),
+              copy.fromStation, _stationName(trip.fromStation, copy), isArabic),
           _detailRow(
-              copy.toStation, _orUnknown(trip.toStation, copy), isArabic),
+              copy.toStation, _stationName(trip.toStation, copy), isArabic),
         ],
       ]),
     );
@@ -353,7 +509,7 @@ class TripPdfService {
         ]),
       );
 
-  pw.Widget _timelineItem(TripPdfSegment segment, int index, _TripPdfCopy copy,
+  pw.Widget _timelineItem(_TripPdfTimelineRow row, int index, _TripPdfCopy copy,
           bool isArabic) =>
       pw.Padding(
         padding: const pw.EdgeInsets.only(bottom: 10),
@@ -363,8 +519,9 @@ class TripPdfService {
             width: 23,
             height: 23,
             alignment: pw.Alignment.center,
-            decoration:
-                pw.BoxDecoration(color: _brand, shape: pw.BoxShape.circle),
+            decoration: pw.BoxDecoration(
+                color: row.isTransfer ? PdfColors.orange : _brand,
+                shape: pw.BoxShape.circle),
             child: pw.Text('$index',
                 style: const pw.TextStyle(color: PdfColors.white, fontSize: 9)),
           ),
@@ -378,14 +535,16 @@ class TripPdfService {
                 crossAxisAlignment: pw.CrossAxisAlignment.start,
                 children: [
                   _text(
-                      '${_orUnknown(segment.fromStation, copy)} ${copy.to} ${_orUnknown(segment.toStation, copy)}',
+                      row.isTransfer
+                          ? '${copy.transfer}: ${_stationName(row.transfer!.station, copy)}'
+                          : '${_stationName(row.segment!.fromStation, copy)} ${copy.to} ${_stationName(row.segment!.toStation, copy)}',
                       isArabic: isArabic,
                       style: pw.TextStyle(
                           color: _ink,
                           fontSize: 10.5,
                           fontWeight: pw.FontWeight.bold)),
                   pw.SizedBox(height: 4),
-                  _text(_segmentMeta(segment, copy, isArabic),
+                  _text(_timelineMeta(row, copy, isArabic),
                       isArabic: isArabic,
                       style: const pw.TextStyle(color: _muted, fontSize: 8.5)),
                 ]),
@@ -426,11 +585,17 @@ class TripPdfService {
             textAlign: isArabic ? pw.TextAlign.right : pw.TextAlign.left),
       );
 
+  String _timelineMeta(
+      _TripPdfTimelineRow row, _TripPdfCopy copy, bool isArabic) {
+    if (row.isTransfer) return _transferMeta(row.transfer!, copy, isArabic);
+    return _segmentMeta(row.segment!, copy, isArabic);
+  }
+
   String _segmentMeta(
       TripPdfSegment segment, _TripPdfCopy copy, bool isArabic) {
     final details = <String>[];
     if (segment.lineKey.trim().isNotEmpty)
-      details.add('${copy.line}: ${segment.lineKey}');
+      details.add('${copy.line}: ${copy.lineName(segment.lineKey)}');
     if (segment.seconds > 0)
       details.add(_formatDuration(segment.seconds, copy, isArabic));
     if (segment.startedAt != null && segment.finishedAt != null) {
@@ -440,6 +605,27 @@ class TripPdfService {
       );
     } else if (segment.startedAt != null) {
       details.add(_formatTime(segment.startedAt!, isArabic));
+    }
+    return details.isEmpty ? copy.noAdditionalDetails : details.join(' | ');
+  }
+
+  String _transferMeta(
+      TripPdfTransfer transfer, _TripPdfCopy copy, bool isArabic) {
+    final details = <String>[];
+    if (transfer.fromLineKey.isNotEmpty && transfer.toLineKey.isNotEmpty) {
+      details
+          .add(copy.lineTransition(transfer.fromLineKey, transfer.toLineKey));
+    }
+    if (transfer.seconds > 0) {
+      details.add(_formatDuration(transfer.seconds, copy, isArabic));
+    }
+    if (transfer.startedAt != null && transfer.finishedAt != null) {
+      details.add(
+        '${_formatTime(transfer.startedAt!, isArabic)}-'
+        '${_formatTime(transfer.finishedAt!, isArabic)}',
+      );
+    } else if (transfer.startedAt != null) {
+      details.add(_formatTime(transfer.startedAt!, isArabic));
     }
     return details.isEmpty ? copy.noAdditionalDetails : details.join(' | ');
   }
@@ -540,6 +726,38 @@ class TripPdfSegment {
   });
 }
 
+class TripPdfTransfer {
+  final String id;
+  final String station;
+  final String fromLineKey;
+  final String toLineKey;
+  final int seconds;
+  final DateTime? startedAt;
+  final DateTime? finishedAt;
+
+  const TripPdfTransfer({
+    required this.id,
+    required this.station,
+    required this.fromLineKey,
+    required this.toLineKey,
+    required this.seconds,
+    required this.startedAt,
+    required this.finishedAt,
+  });
+}
+
+class _TripPdfTimelineRow {
+  final TripPdfSegment? segment;
+  final TripPdfTransfer? transfer;
+
+  const _TripPdfTimelineRow.segment(this.segment) : transfer = null;
+  const _TripPdfTimelineRow.transfer(this.transfer) : segment = null;
+
+  bool get isTransfer => transfer != null;
+  String get id => transfer?.id ?? segment!.id;
+  DateTime? get startedAt => transfer?.startedAt ?? segment?.startedAt;
+}
+
 class _TripPdfCopy {
   final bool arabic;
   const _TripPdfCopy._(this.arabic);
@@ -554,6 +772,7 @@ class _TripPdfCopy {
   String get tripOverview => arabic ? 'ملخص الرحلة' : 'Trip overview';
   String get routeDetails => arabic ? 'تفاصيل المسار' : 'Route details';
   String get tripTimeline => arabic ? 'التسلسل الزمني للرحلة' : 'Trip timeline';
+  String get transfer => arabic ? 'تحويل' : 'Transfer';
   String get startTime => arabic ? 'وقت البدء' : 'Start time';
   String get endTime => arabic ? 'وقت الانتهاء' : 'End time';
   String get duration => arabic ? 'المدة' : 'Duration';
@@ -582,6 +801,27 @@ class _TripPdfCopy {
   String get kilometers => arabic ? 'كم' : 'km';
   String get to => arabic ? 'إلى' : 'to';
   String get line => arabic ? 'الخط' : 'Line';
+
+  String lineName(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (arabic) {
+      const names = <String, String>{
+        'blue': 'الأزرق',
+        'red': 'الأحمر',
+        'green': 'الأخضر',
+        'orange': 'البرتقالي',
+        'purple': 'البنفسجي',
+        'yellow': 'الأصفر',
+      };
+      return names[normalized] ?? value;
+    }
+    if (normalized.isEmpty) return value;
+    return normalized[0].toUpperCase() + normalized.substring(1);
+  }
+
+  String lineTransition(String from, String to) => arabic
+      ? '$line ${lineName(from)} ${this.to} $line ${lineName(to)}'
+      : '${lineName(from)} $line -> ${lineName(to)} $line';
 
   String modeLabel(String value) => value == 'metro'
       ? (arabic ? 'المترو' : 'Metro')

@@ -18,6 +18,8 @@ import 'package:firebase_database/firebase_database.dart';
 import '../constants/colors.dart';
 import '../services/app_bus.dart';
 import '../services/local_notifications.dart';
+import '../services/metro_open_close_alerts.dart';
+import '../services/trip_notification_settings.dart';
 import '../widgets/all_metro_lines.dart'; // metroLineColors
 import '../widgets/onboard_display.dart';
 import '../widgets/shimmers.dart';
@@ -94,6 +96,8 @@ enum _TripMode { metro, drive }
 
 enum NavHintType { walk, board, transfer, alight, prepare }
 
+enum _TripAlertKind { progress, transfer, destination, completed }
+
 class MainScreen extends StatefulWidget {
   final String firstName;
   final bool emailVerified;
@@ -119,6 +123,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
 // NEW: de-dupe for “prepare to transfer”
   final Set<String> _transferPrepareShown = {};
+  final Set<String> _tripAlertEventsSent = <String>{};
+  TripNotificationSettings _tripNotificationSettings =
+      const TripNotificationSettings();
   String? _activeSegmentId; // NEW: current metro segment push key
   DateTime? _segmentStartTime; // NEW: when the current metro segment started
 
@@ -538,6 +545,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   String? _metroNextName;
   String? _metroAfterName;
   bool _metroAlightAtNext = false;
+
   // Map
   final Completer<GoogleMapController> _mapController = Completer();
   static const LatLng _riyadh = LatLng(24.7136, 46.6753);
@@ -611,6 +619,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   // ======= Simple in-app Navigation state =======
   StreamSubscription<Position>? _navSub;
   bool _navigating = false;
+  bool _endingTrip = false;
   List<LatLng> _navPoints = [];
   Polyline? _navPolyline;
   LatLng? _navDestination;
@@ -627,6 +636,69 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   String? _tripDestLabel;
   LatLng? _tripOriginLL;
   LatLng? _tripDestLL;
+
+  String _tripText(String english, String arabic) {
+    return Localizations.localeOf(context).languageCode == 'ar'
+        ? arabic
+        : english;
+  }
+
+  bool _isTripAlertEnabled(_TripAlertKind kind) {
+    switch (kind) {
+      case _TripAlertKind.progress:
+        return _tripNotificationSettings.allowsProgress;
+      case _TripAlertKind.transfer:
+        return _tripNotificationSettings.transferAlerts;
+      case _TripAlertKind.destination:
+      case _TripAlertKind.completed:
+        return _tripNotificationSettings.destinationAlerts;
+    }
+  }
+
+  void _sendTripAlert({
+    required String key,
+    required String title,
+    required String body,
+    required _TripAlertKind kind,
+    required TripNotificationPriority priority,
+    required NavHintType hintType,
+    Color? lineColor,
+  }) {
+    if ((!_navigating && kind != _TripAlertKind.completed) ||
+        !_isTripAlertEnabled(kind) ||
+        !_tripAlertEventsSent.add(key)) {
+      return;
+    }
+    if (_isInForeground && mounted) {
+      _showNavHint(hintType, body);
+      if (priority != TripNotificationPriority.progress) {
+        HapticFeedback.selectionClick();
+      }
+    }
+    unawaited(AppLocalNotifications.showTripEvent(
+      eventKey: key,
+      title: title,
+      body: body,
+      priority: priority,
+      accentColor: lineColor,
+    ));
+  }
+
+  Future<void> _loadTripNotificationSettings() async {
+    final settings = await TripNotificationSettings.load();
+    if (mounted) setState(() => _tripNotificationSettings = settings);
+  }
+
+  Future<void> _saveTripNotificationSettings(
+      TripNotificationSettings settings) async {
+    await settings.save();
+    if (settings.serviceAlerts) {
+      await MetroOpenCloseAlerts.scheduleNextPair();
+    } else {
+      await MetroOpenCloseAlerts.cancelAll();
+    }
+    if (mounted) setState(() => _tripNotificationSettings = settings);
+  }
 
   // ======= NEW: Car mode multi-route + banner state =======
   List<DriveRoute>? _driveAlternates; // from Routes API v2
@@ -1053,6 +1125,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 // and you have a TravelHistoryService instance as _travelSvc
 
   Future<void> _startTrip() async {
+    if (_endingTrip) return;
     if (_userDestination == null) {
       _notify(getTranslated(context, 'Pick a destination first.'));
       return;
@@ -1075,6 +1148,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _walkFirstPromptDone = false;
     _transferNextShown.clear();
     _transferPrepareShown.clear();
+    _tripAlertEventsSent.clear();
+    await AppLocalNotifications.clearTripEvents();
 
     _tripDestLabel =
         _destCtrl.text.isNotEmpty ? _destCtrl.text : _tripDestLabel;
@@ -1208,17 +1283,15 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             _navNext =
                 '${_cap(first.lineKey)} ${getTranslated(context, "line")}';
           });
-          if (_isInForeground && mounted) {
-            _showNavHint(
-              NavHintType.board,
-              '${getTranslated(context, "Head to")} ${first.name} • '
-              '${getTranslated(context, "to board the")} ${_cap(first.lineKey)} ${getTranslated(context, "line")}',
-            );
-            HapticFeedback.selectionClick();
-          }
-          AppLocalNotifications.show(
+          _sendTripAlert(
+            key: 'head_to_first_${first.id}',
+            title: _tripText('Head to your station', 'اتجه إلى محطتك'),
             body:
                 '${getTranslated(context, "Head to")} ${first.name} • ${getTranslated(context, "to board the")} ${_cap(first.lineKey)} ${getTranslated(context, "line")}',
+            kind: _TripAlertKind.progress,
+            priority: TripNotificationPriority.progress,
+            hintType: NavHintType.board,
+            lineColor: metroLineColors[first.lineKey],
           );
         } else {
           // Already at/near first station — metro mode from the start
@@ -1267,28 +1340,45 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
 
     await _bgNav.start(dest: _navDestination!);
+    if (_tripMode == _TripMode.metro && _metroSeq.length >= 2) {
+      final stops = _metroSeq.length - 1;
+      final transfers = _lastChosenRoute?.transfers ?? 0;
+      final seconds = (_lastChosenRoute?.totalSeconds ?? 0).round();
+      final eta = seconds > 0
+          ? TimeOfDay.fromDateTime(
+                  DateTime.now().add(Duration(seconds: seconds)))
+              .format(context)
+          : null;
+      _sendTripAlert(
+        key:
+            'trip_started_${_activeTripId ?? _tripStartAt!.millisecondsSinceEpoch}',
+        title: _tripText('Trip started', 'بدأت الرحلة'),
+        body: _tripText(
+          '$stops stations${transfers == 0 ? '' : ' · $transfers transfer${transfers == 1 ? '' : 's'}'}${eta == null ? '' : ' · Estimated arrival $eta'}',
+          '$stops محطات${transfers == 0 ? '' : ' · $transfers تحويلات'}${eta == null ? '' : ' · الوصول المتوقع $eta'}',
+        ),
+        kind: _TripAlertKind.progress,
+        priority: TripNotificationPriority.progress,
+        hintType: NavHintType.board,
+        lineColor: metroLineColors[_metroSeq.first.lineKey],
+      );
+    }
     _attachNavStream();
   }
 
   void _attachNavStream() {
     _uiNavSub?.cancel();
 
-    // de-duped alerts
-    final Map<String, DateTime> _alertShownAt = {};
-    const Duration _alertCooldown = Duration(seconds: 45);
     void _notifyOnce(String key, String message,
         {NavHintType type = NavHintType.walk}) {
-      if (!_navigating) return;
-      final now = DateTime.now();
-      final last = _alertShownAt[key];
-      if (last == null || now.difference(last) >= _alertCooldown) {
-        _alertShownAt[key] = now;
-        if (_isInForeground && mounted) {
-          _showNavHint(type, message);
-          HapticFeedback.selectionClick();
-        }
-        AppLocalNotifications.show(body: message);
-      }
+      _sendTripAlert(
+        key: key,
+        title: _tripText('Trip update', 'تحديث الرحلة'),
+        body: message,
+        kind: _TripAlertKind.progress,
+        priority: TripNotificationPriority.progress,
+        hintType: type,
+      );
     }
 
     // Helper: nearest metro station anywhere in the network
@@ -1567,6 +1657,24 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         }
 
         if (arrivedNow) {
+          final bool arrivedAtFinalStation =
+              _metroLeg + 1 == _metroSeq.length - 1;
+          if (arrivedAtFinalStation) {
+            final finalStation = _metroSeq.last;
+            _sendTripAlert(
+              key: 'destination_arrived_${finalStation.id}',
+              title: finalStation.name,
+              body: _tripText(
+                'This is your stop. Please exit here.',
+                'هذه هي محطتك. يرجى النزول هنا.',
+              ),
+              kind: _TripAlertKind.destination,
+              priority: TripNotificationPriority.critical,
+              hintType: NavHintType.alight,
+              lineColor: metroLineColors[finalStation.lineKey],
+            );
+          }
+
           // ===== NEW: close current segment and open the next one =====
           if (_activeTripId != null &&
               _activeSegmentId != null &&
@@ -1657,6 +1765,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         final bool alightAtNext = (_metroLeg + 1 == _metroSeq.length - 1);
         final bool transferAtNext =
             (_metroLeg + 1 < _metroSeq.length - 1) && (nextLine != currLine);
+        final int remainingStops =
+            math.max(0, _metroSeq.length - 1 - _metroLeg);
 
         _metroCurLineKey = currLine;
         _stopsLeftOnLine = stopsLeftOnLine;
@@ -1689,10 +1799,18 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             final String toLine = _metroSeq[xferLegIdx + 1].lineKey;
             final key = 'xfer_prep_${transferAt.id}_$toLine';
             if (!_transferPrepareShown.contains(key)) {
-              final msg =
-                  '${getTranslated(context, "Get ready to change lines at")} ${transferAt.name} '
-                  '(${getTranslated(context, "to")} ${getTranslated(context, toLine)})';
-              _notifyOnce(key, msg, type: NavHintType.prepare);
+              _sendTripAlert(
+                key: key,
+                title: _tripText('Approaching transfer', 'الاقتراب من التحويل'),
+                body: _tripText(
+                  '$stopsToTransfer stations remaining. Change to ${_cap(toLine)} Line at ${transferAt.name}.',
+                  'باقي $stopsToTransfer محطات. انتقل إلى الخط ${_cap(toLine)} في ${transferAt.name}.',
+                ),
+                kind: _TripAlertKind.transfer,
+                priority: TripNotificationPriority.progress,
+                hintType: NavHintType.prepare,
+                lineColor: metroLineColors[toLine],
+              );
               _transferPrepareShown.add(key);
             }
             _transferSoon = true;
@@ -1700,6 +1818,48 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             _transferSoonLineKey = toLine;
             _transferSoonStationName = transferAt.name;
           }
+        }
+
+        // Detailed mode gets a small number of quiet progress updates. It never
+        // competes with an imminent transfer or destination instruction.
+        if (_tripNotificationSettings.detail ==
+                TripNotificationDetail.detailed &&
+            xferLegIdx == null &&
+            !transferAtNext &&
+            !alightAtNext &&
+            (remainingStops == 4 || remainingStops == 3)) {
+          final etaMinutes = math.max(1, (_etaSecondsForUI() / 60).ceil());
+          _sendTripAlert(
+            key: 'progress_${next.id}_$remainingStops',
+            title: _tripText(
+              '$remainingStops stations remaining',
+              'باقي $remainingStops محطات',
+            ),
+            body: _tripText(
+              'About $etaMinutes min to ${_metroSeq.last.name}.',
+              'حوالي $etaMinutes دقيقة إلى ${_metroSeq.last.name}.',
+            ),
+            kind: _TripAlertKind.progress,
+            priority: TripNotificationPriority.progress,
+            hintType: NavHintType.prepare,
+            lineColor: metroLineColors[currLine],
+          );
+        }
+
+        if (remainingStops == 2 && xferLegIdx == null) {
+          final finalStation = _metroSeq.last;
+          _sendTripAlert(
+            key: 'destination_prepare_${finalStation.id}',
+            title: _tripText('Approaching destination', 'الاقتراب من الوجهة'),
+            body: _tripText(
+              '2 stations remaining. ${finalStation.name} is coming up soon.',
+              'باقي محطتان. محطة ${finalStation.name} قادمة قريباً.',
+            ),
+            kind: _TripAlertKind.destination,
+            priority: TripNotificationPriority.progress,
+            hintType: NavHintType.prepare,
+            lineColor: metroLineColors[finalStation.lineKey],
+          );
         }
 
         // BEFORE BOARDING prompt if stayed in Metro mode from start
@@ -1726,20 +1886,39 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         if (transferAtNext && transferToLine != null) {
           final key = 'xfer_next_${next.id}_$transferToLine';
           if (!_transferNextShown.contains(key)) {
-            final msg =
-                '${getTranslated(context, "Change line at next station")} → '
-                '${getTranslated(context, transferToLine)}';
-            _notifyOnce(key, msg, type: NavHintType.transfer);
+            _sendTripAlert(
+              key: key,
+              title: _tripText(
+                'Transfer at ${next.name}',
+                'تحويل في ${next.name}',
+              ),
+              body: _tripText(
+                'Exit at the next station and follow signs for the ${_cap(transferToLine)} Line.',
+                'انزل في المحطة التالية واتبع الإشارات إلى الخط ${_cap(transferToLine)}.',
+              ),
+              kind: _TripAlertKind.transfer,
+              priority: TripNotificationPriority.important,
+              hintType: NavHintType.transfer,
+              lineColor: metroLineColors[transferToLine],
+            );
             _transferNextShown.add(key);
           }
         }
 
         // ALIGHT at next
-        if (alightAtNext && _metroLeg >= 1) {
-          _notifyOnce(
-            'alight_${next.id}',
-            getTranslated(context, 'Alight at next station'),
-            type: NavHintType.alight,
+        if (alightAtNext) {
+          _sendTripAlert(
+            key: 'destination_next_${next.id}',
+            title: _tripText(
+                'Next station: ${next.name}', 'المحطة التالية: ${next.name}'),
+            body: _tripText(
+              'Get ready to exit at the next stop.',
+              'استعد للنزول في المحطة التالية.',
+            ),
+            kind: _TripAlertKind.destination,
+            priority: TripNotificationPriority.critical,
+            hintType: NavHintType.alight,
+            lineColor: metroLineColors[next.lineKey],
           );
         }
       }
@@ -1839,7 +2018,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           if (now.difference(_nearDestSince!).inSeconds >= 8) {
             final msg = getTranslated(context, 'You have arrived.');
             if (_isInForeground && mounted) _notify(msg);
-            AppLocalNotifications.show(body: msg);
             _endTrip();
             return;
           }
@@ -1856,7 +2034,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             if (now.difference(_nearFinalSince!).inSeconds >= 8) {
               final msg = getTranslated(context, 'You have arrived.');
               if (_isInForeground && mounted) _notify(msg);
-              AppLocalNotifications.show(body: msg);
               _endTrip();
               return;
             }
@@ -1874,7 +2051,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           _navRemainingMeters < 35) {
         final msg = getTranslated(context, 'You have arrived.');
         if (_isInForeground && mounted) _notify(msg);
-        AppLocalNotifications.show(body: msg);
         _endTrip();
         return;
       }
@@ -1884,6 +2060,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 
   void _endTrip() async {
+    if (_endingTrip) return;
+    _endingTrip = true;
+    final completedTripId = _activeTripId;
+    final startedAt = _tripStartAt;
     // Stop background session (but do not call this in dispose)
     await _bgNav.stop();
     _uiNavSub?.cancel();
@@ -1921,8 +2101,29 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       );
     }
 
+    // Keep only the completion summary; all earlier prompts belong to the
+    // completed journey and should no longer be actionable.
+    await AppLocalNotifications.clearTripEvents();
+    if (startedAt != null) {
+      final duration = DateTime.now().difference(startedAt);
+      final minutes = math.max(1, duration.inMinutes);
+      _sendTripAlert(
+        key:
+            'trip_completed_${completedTripId ?? startedAt.millisecondsSinceEpoch}',
+        title: _tripText('Trip completed', 'اكتملت الرحلة'),
+        body: _tripText(
+          'Actual travel time: $minutes min.',
+          'المدة الفعلية للرحلة: $minutes دقيقة.',
+        ),
+        kind: _TripAlertKind.completed,
+        priority: TripNotificationPriority.progress,
+        hintType: NavHintType.alight,
+      );
+    }
+
     setState(() {
       _navigating = false;
+      _endingTrip = false;
       _followEnabled = true;
       _navPolyline = null;
       _navPoints.clear();
@@ -2218,6 +2419,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     // Notifications & graph
     AppLocalNotifications.init(); // safe multi-call
+    unawaited(_loadTripNotificationSettings());
     _graph = MetroGraph();
 
     // Seed inputs
@@ -3874,9 +4076,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       await _showArrivalDialog(msg);
     }
 
-    // Still fire the local push (keeps the original behavior)
-    AppLocalNotifications.show(body: msg);
-
     // End trip after user acknowledges (or immediately if app is backgrounded)
     _endTrip();
   }
@@ -4008,6 +4207,164 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   double _hueForLineKey(String key) {
     final c = metroLineColors[key] ?? Colors.blueGrey;
     return _hueForColor(c);
+  }
+
+  String _notificationDetailLabel(TripNotificationDetail detail) {
+    switch (detail) {
+      case TripNotificationDetail.minimal:
+        return _tripText('Minimal', 'الحد الأدنى');
+      case TripNotificationDetail.standard:
+        return _tripText('Standard', 'قياسي');
+      case TripNotificationDetail.detailed:
+        return _tripText('Detailed', 'مفصل');
+    }
+  }
+
+  void _showTripNotificationSettingsSheet() {
+    var draft = _tripNotificationSettings;
+    final colors = Theme.of(context).colorScheme;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (sheetContext, setSheetState) => SafeArea(
+          top: false,
+          child: Container(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(sheetContext).height * .82,
+            ),
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                Center(
+                  child: Container(
+                    width: 42,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.black12,
+                      borderRadius: BorderRadius.circular(99),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 18),
+                Row(
+                  children: [
+                    Container(
+                      width: 42,
+                      height: 42,
+                      decoration: BoxDecoration(
+                        color: colors.primaryContainer,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Icon(Icons.notifications_active_rounded,
+                          color: colors.primary),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _tripText('Trip notifications', 'إشعارات الرحلة'),
+                        style: const TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.w800),
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  _tripText(
+                    'Receive the important instruction once, at the right time.',
+                    'استقبل التعليمات المهمة مرة واحدة وفي الوقت المناسب.',
+                  ),
+                  style: TextStyle(color: Colors.blueGrey.shade600),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  _tripText('Alert detail', 'مستوى التنبيهات'),
+                  style: const TextStyle(fontWeight: FontWeight.w800),
+                ),
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: TripNotificationDetail.values.map((detail) {
+                    return ChoiceChip(
+                      label: Text(_notificationDetailLabel(detail)),
+                      selected: draft.detail == detail,
+                      onSelected: (_) => setSheetState(() {
+                        draft = draft.copyWith(detail: detail);
+                      }),
+                    );
+                  }).toList(),
+                ),
+                const SizedBox(height: 14),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  secondary: const Icon(Icons.flag_outlined),
+                  title:
+                      Text(_tripText('Destination alerts', 'تنبيهات الوجهة')),
+                  subtitle: Text(_tripText(
+                      'Approaching, next stop, and arrival',
+                      'الاقتراب والمحطة التالية والوصول')),
+                  value: draft.destinationAlerts,
+                  onChanged: (value) => setSheetState(() {
+                    draft = draft.copyWith(destinationAlerts: value);
+                  }),
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  secondary: const Icon(Icons.swap_horiz_rounded),
+                  title: Text(_tripText('Transfer alerts', 'تنبيهات التحويل')),
+                  subtitle: Text(_tripText(
+                      'When and where to change lines', 'متى وأين تغيّر الخط')),
+                  value: draft.transferAlerts,
+                  onChanged: (value) => setSheetState(() {
+                    draft = draft.copyWith(transferAlerts: value);
+                  }),
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  secondary: const Icon(Icons.timeline_rounded),
+                  title: Text(_tripText('Trip progress', 'تقدم الرحلة')),
+                  subtitle: Text(_tripText(
+                      'Start summary and optional progress updates',
+                      'ملخص البداية وتحديثات التقدم الاختيارية')),
+                  value: draft.progressAlerts,
+                  onChanged: (value) => setSheetState(() {
+                    draft = draft.copyWith(progressAlerts: value);
+                  }),
+                ),
+                SwitchListTile.adaptive(
+                  contentPadding: EdgeInsets.zero,
+                  secondary: const Icon(Icons.schedule_rounded),
+                  title: Text(
+                      _tripText('Metro service alerts', 'تنبيهات خدمة المترو')),
+                  subtitle: Text(_tripText('Opening and closing reminders',
+                      'تذكيرات الافتتاح والإغلاق')),
+                  value: draft.serviceAlerts,
+                  onChanged: (value) => setSheetState(() {
+                    draft = draft.copyWith(serviceAlerts: value);
+                  }),
+                ),
+                const SizedBox(height: 12),
+                FilledButton(
+                  onPressed: () {
+                    Navigator.of(sheetContext).pop();
+                    unawaited(_saveTripNotificationSettings(draft));
+                  },
+                  child: Text(_tripText('Save preferences', 'حفظ التفضيلات')),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   void _showUpcomingStopsOnCurrentLine() {
@@ -4337,7 +4694,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           child: Padding(
             padding: const EdgeInsets.only(right: 12, top: 8),
             child: CircleAction(
-                icon: Icons.notifications_none_rounded, onTap: () {}),
+                icon: Icons.notifications_none_rounded,
+                onTap: _showTripNotificationSettingsSheet),
           ),
         )),
 

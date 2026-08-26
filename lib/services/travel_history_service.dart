@@ -12,6 +12,8 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 ///  - toStation:    'Last metro station name'
 ///  - metroSegments/<segId>:
 ///       { fromStation, toStation, lineKey, seconds, startedAt, finishedAt }
+///  - metroTransfers/<transferId>:
+///       { station, fromLineKey, toLineKey, seconds, startedAt, finishedAt }
 class TravelHistoryService {
   final _db = FirebaseDatabase.instance;
   final _auth = FirebaseAuth.instance;
@@ -146,6 +148,38 @@ class TravelHistoryService {
       'toStation': toStation,
       'seconds': seconds,
       'finishedAt': (finishedAt ?? DateTime.now()).millisecondsSinceEpoch,
+    });
+  }
+
+  /// Records an interchange independently from station-to-station movement.
+  /// Transfer duration is only persisted when the tracker has an actual value.
+  Future<void> addMetroTransfer({
+    required String entryId,
+    required String station,
+    required String fromLineKey,
+    required String toLineKey,
+    int seconds = 0,
+    DateTime? startedAt,
+    DateTime? finishedAt,
+  }) async {
+    final uid = _auth.currentUser?.uid;
+    if (uid == null ||
+        station.trim().isEmpty ||
+        fromLineKey.trim().isEmpty ||
+        toLineKey.trim().isEmpty ||
+        fromLineKey.trim().toLowerCase() == toLineKey.trim().toLowerCase()) {
+      return;
+    }
+    final now = DateTime.now();
+    final ref =
+        _db.ref('App/TravelHistory/$uid/$entryId/metroTransfers').push();
+    await ref.set({
+      'station': station,
+      'fromLineKey': fromLineKey,
+      'toLineKey': toLineKey,
+      'seconds': seconds,
+      'startedAt': (startedAt ?? now).millisecondsSinceEpoch,
+      'finishedAt': (finishedAt ?? now).millisecondsSinceEpoch,
     });
   }
 

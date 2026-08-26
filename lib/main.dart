@@ -405,6 +405,7 @@ import 'localization/demo_localization.dart';
 import 'localization/language_constants.dart';
 import 'screens/welcome_screen.dart';
 import 'constants/colors.dart';
+import 'services/trip_notification_settings.dart';
 
 // NEW: notifications + scheduler
 
@@ -423,7 +424,12 @@ Future<void> main() async {
 
   // NEW: init local notifications & schedule next metro open/close alerts
   await AppLocalNotifications.init();
-  await MetroOpenCloseAlerts.scheduleNextPair();
+  final tripNotificationSettings = await TripNotificationSettings.load();
+  if (tripNotificationSettings.serviceAlerts) {
+    await MetroOpenCloseAlerts.scheduleNextPair();
+  } else {
+    await MetroOpenCloseAlerts.cancelAll();
+  }
 
   final startLocale = await getLocale();
 
