@@ -12,6 +12,7 @@ import 'package:speech_to_text/speech_to_text.dart' as stt;
 import 'package:darb/constants/colors.dart';
 import 'package:darb/localization/language_constants.dart';
 import 'package:darb/latlon/latlong_stations.dart' as metro;
+import 'package:darb/widgets/all_metro_lines.dart';
 import 'package:darb/services/app_bus.dart';
 import 'package:darb/services/trip_analytics_service.dart';
 import 'package:darb/services/metro_trip_time_service.dart';
@@ -51,6 +52,8 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
   OverlayEntry? _suggestionsOverlay;
   bool _suggestForOrigin = true;
   final _inputFocus = FocusNode();
+  List<Map<String, dynamic>> _stationSuggestions = const [];
+  _WhichTarget? _stationSuggestionTarget;
 
   // Persistence keys
   static const _kDraftKey = 'chatbot_draft_v1';
@@ -70,12 +73,18 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
 
   // Flattened station list (reuse)
   List<Map<String, dynamic>> get _allStations => [
-        ...metro.blueStations,
-        ...metro.redStations,
-        ...metro.yellowStations,
-        ...metro.purpleStations,
-        ...metro.orangeStations,
-        ...metro.greenStations,
+        for (final station in metro.blueStations)
+          <String, dynamic>{...station, 'lineKey': 'blue'},
+        for (final station in metro.redStations)
+          <String, dynamic>{...station, 'lineKey': 'red'},
+        for (final station in metro.yellowStations)
+          <String, dynamic>{...station, 'lineKey': 'yellow'},
+        for (final station in metro.purpleStations)
+          <String, dynamic>{...station, 'lineKey': 'purple'},
+        for (final station in metro.orangeStations)
+          <String, dynamic>{...station, 'lineKey': 'orange'},
+        for (final station in metro.greenStations)
+          <String, dynamic>{...station, 'lineKey': 'green'},
       ];
 
   // -------------- Lifecycle --------------
@@ -107,7 +116,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
 
   @override
   void dispose() {
-    _hideSuggestions();
+    _hideSuggestions(rebuild: false);
     _persistDraft(); // store last typed text
     _ctrl.dispose();
     _inputFocus.dispose();
@@ -230,6 +239,10 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     final cs = Theme.of(context).colorScheme;
     final t = Theme.of(context).textTheme;
     final timeSuggestions = _tripTimeSuggestions(_ctrl.text);
+    final availableHeight = MediaQuery.sizeOf(context).height -
+        MediaQuery.viewInsetsOf(context).bottom;
+    final stationPickerHeight =
+        math.min(280.0, math.max(170.0, availableHeight * .36));
 
     return Scaffold(
       backgroundColor: cs.surface,
@@ -381,7 +394,9 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                           const SizedBox(height: 8),
                           _TripAnalyticsCard(
                             estimate: msg.estimate!,
-                            from: msg.lang == _Lang.ar ? msg.fromAr! : msg.fromEn!,
+                            from: msg.lang == _Lang.ar
+                                ? msg.fromAr!
+                                : msg.fromEn!,
                             to: msg.lang == _Lang.ar ? msg.toAr! : msg.toEn!,
                             statistic: msg.statistic!,
                             isArabic: msg.lang == _Lang.ar,
@@ -410,7 +425,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
             ),
           ),
 
-          if (timeSuggestions.isNotEmpty)
+          if (timeSuggestions.isNotEmpty && _stationSuggestions.isEmpty)
             AnimatedSwitcher(
               duration: const Duration(milliseconds: 220),
               child: Padding(
@@ -421,11 +436,15 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                   children: [
                     Row(
                       children: [
-                        Icon(Icons.auto_awesome_rounded, size: 16, color: cs.primary),
+                        Icon(Icons.auto_awesome_rounded,
+                            size: 16, color: cs.primary),
                         const SizedBox(width: 6),
                         Text(
-                          _localeIsArabic ? 'اقتراحات ذكية' : 'Smart suggestions',
-                          style: t.labelLarge?.copyWith(fontWeight: FontWeight.w800),
+                          _localeIsArabic
+                              ? 'اقتراحات ذكية'
+                              : 'Smart suggestions',
+                          style: t.labelLarge
+                              ?.copyWith(fontWeight: FontWeight.w800),
                         ),
                         const Spacer(),
                         TextButton(
@@ -456,141 +475,157 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
               ),
             ),
 
+          if (_stationSuggestions.isNotEmpty &&
+              _stationSuggestionTarget != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: SizedBox(
+                height: stationPickerHeight,
+                child: _StationSuggestionPanel(
+                  results: _stationSuggestions,
+                  target: _stationSuggestionTarget!,
+                  isArabic: _replyLang() == _Lang.ar,
+                  onPick: _onPickSuggestion,
+                ),
+              ),
+            ),
+
           // -------- Input --------
           SafeArea(
             top: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               child: Container(
-                padding: const EdgeInsets.all(6),
-                decoration: BoxDecoration(
-                  color: cs.surfaceContainerHighest.withOpacity(.62),
-                  borderRadius: BorderRadius.circular(28),
-                  border: Border.all(color: cs.outline.withOpacity(.28)),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withOpacity(
-                        Theme.of(context).brightness == Brightness.dark
-                            ? .12
-                            : .05,
-                      ),
-                      blurRadius: 16,
-                      offset: const Offset(0, 6),
-                    ),
-                  ],
-                ),
-                child: Row(
-                  children: [
-                  // Mic (press & hold)
-                  GestureDetector(
-                    onLongPressStart: (_) {
-                      if (_sttAvailable) _startMic();
-                    },
-                    onLongPressEnd: (_) {
-                      _stopMic(sendOnStop: true);
-                    },
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 160),
-                      curve: Curves.easeOut,
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: _holdToTalk
-                            ? Theme.of(context)
-                                .colorScheme
-                                .primary
-                                .withOpacity(0.18)
-                            : Colors.transparent,
-                        border: Border.all(
-                          color: _listening
-                              ? Theme.of(context).colorScheme.primary
-                              : Theme.of(context).colorScheme.outline,
+                  padding: const EdgeInsets.all(6),
+                  decoration: BoxDecoration(
+                    color: cs.surfaceContainerHighest.withOpacity(.62),
+                    borderRadius: BorderRadius.circular(28),
+                    border: Border.all(color: cs.outline.withOpacity(.28)),
+                    boxShadow: [
+                      BoxShadow(
+                        color: Colors.black.withOpacity(
+                          Theme.of(context).brightness == Brightness.dark
+                              ? .12
+                              : .05,
                         ),
+                        blurRadius: 16,
+                        offset: const Offset(0, 6),
                       ),
-                      child: IconButton(
-                        tooltip: _localeIsArabic ? 'تحدث' : 'Speak',
-                        onPressed: _sttAvailable
-                            ? () async {
-                                if (_listening) {
-                                  await _stopMic(sendOnStop: true);
-                                } else {
-                                  await _startMic();
-                                }
-                              }
-                            : null,
-                        icon: Icon(
-                          _listening
-                              ? Icons.mic_rounded
-                              : Icons.mic_none_rounded,
-                        ),
-                      ),
-                    ),
+                    ],
                   ),
-                  const SizedBox(width: 8),
+                  child: Row(
+                    children: [
+                      // Mic (press & hold)
+                      GestureDetector(
+                        onLongPressStart: (_) {
+                          if (_sttAvailable) _startMic();
+                        },
+                        onLongPressEnd: (_) {
+                          _stopMic(sendOnStop: true);
+                        },
+                        child: AnimatedContainer(
+                          duration: const Duration(milliseconds: 160),
+                          curve: Curves.easeOut,
+                          width: 44,
+                          height: 44,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: _holdToTalk
+                                ? Theme.of(context)
+                                    .colorScheme
+                                    .primary
+                                    .withOpacity(0.18)
+                                : Colors.transparent,
+                            border: Border.all(
+                              color: _listening
+                                  ? Theme.of(context).colorScheme.primary
+                                  : Theme.of(context).colorScheme.outline,
+                            ),
+                          ),
+                          child: IconButton(
+                            tooltip: _localeIsArabic ? 'تحدث' : 'Speak',
+                            onPressed: _sttAvailable
+                                ? () async {
+                                    if (_listening) {
+                                      await _stopMic(sendOnStop: true);
+                                    } else {
+                                      await _startMic();
+                                    }
+                                  }
+                                : null,
+                            icon: Icon(
+                              _listening
+                                  ? Icons.mic_rounded
+                                  : Icons.mic_none_rounded,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
 
-                  // Text box
-                  Expanded(
-                    child: TextField(
-                      controller: _ctrl,
-                      focusNode: _inputFocus,
-                      textInputAction: TextInputAction.send,
-                      onSubmitted: (_) => _send(),
-                      onChanged: (val) {
-                        _handleChanged(val);
-                        _persistDraft(); // live-persist draft as they type
-                      },
-                      minLines: 1,
-                      maxLines: 4,
-                      decoration: InputDecoration(
-                        hintText:
-                            getTranslated(context, 'bot.typeYourMessage') ==
+                      // Text box
+                      Expanded(
+                        child: TextField(
+                          controller: _ctrl,
+                          focusNode: _inputFocus,
+                          textInputAction: TextInputAction.send,
+                          onSubmitted: (_) => _send(),
+                          onChanged: (val) {
+                            _handleChanged(val);
+                            _persistDraft(); // live-persist draft as they type
+                          },
+                          minLines: 1,
+                          maxLines: 4,
+                          decoration: InputDecoration(
+                            hintText: getTranslated(
+                                        context, 'bot.typeYourMessage') ==
                                     'bot.typeYourMessage'
                                 ? (_localeIsArabic
                                     ? 'اكتب رسالتك'
                                     : 'Type your message')
                                 : getTranslated(context, 'bot.typeYourMessage'),
-                        filled: true,
-                        border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(26),
-                          borderSide: BorderSide.none,
+                            filled: true,
+                            border: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(26),
+                              borderSide: BorderSide.none,
+                            ),
+                            enabledBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(26),
+                              borderSide: BorderSide.none,
+                            ),
+                            focusedBorder: OutlineInputBorder(
+                              borderRadius: BorderRadius.circular(26),
+                              borderSide:
+                                  BorderSide(color: cs.primary.withOpacity(.5)),
+                            ),
+                            fillColor: cs.surface,
+                            contentPadding: const EdgeInsets.symmetric(
+                                horizontal: 16, vertical: 12),
+                          ),
                         ),
-                        enabledBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(26),
-                          borderSide: BorderSide.none,
-                        ),
-                        focusedBorder: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(26),
-                          borderSide: BorderSide(color: cs.primary.withOpacity(.5)),
-                        ),
-                        fillColor: cs.surface,
-                        contentPadding: const EdgeInsets.symmetric(
-                            horizontal: 16, vertical: 12),
                       ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
+                      const SizedBox(width: 8),
 
-                  // Send
-                  IconButton.filled(
-                    style: IconButton.styleFrom(
-                      minimumSize: const Size(48, 48),
-                      backgroundColor: cs.primary,
-                      foregroundColor: cs.onPrimary,
-                    ),
-                    onPressed: _busy ? null : _send,
-                    icon: _busy
-                        ? const SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator())
-                        : const Icon(Icons.send_rounded),
+                      // Send
+                      IconButton.filled(
+                        style: IconButton.styleFrom(
+                          minimumSize: const Size(48, 48),
+                          backgroundColor: cs.primary,
+                          foregroundColor: cs.onPrimary,
+                        ),
+                        onPressed: _busy ? null : _send,
+                        icon: _busy
+                            ? const SizedBox(
+                                width: 18,
+                                height: 18,
+                                child: CircularProgressIndicator())
+                            : const Icon(Icons.send_rounded),
+                      ),
+                    ],
                   ),
-                  ],
                 ),
               ),
             ),
-          ),
         ],
       ),
     );
@@ -878,10 +913,16 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
 
   IconData _suggestionIcon(String suggestion) {
     final text = _norm(suggestion);
-    if (text.contains('fastest') || text.contains('quickest') || text.contains('اسرع') || text.contains('أسرع')) {
+    if (text.contains('fastest') ||
+        text.contains('quickest') ||
+        text.contains('اسرع') ||
+        text.contains('أسرع')) {
       return Icons.bolt_rounded;
     }
-    if (text.contains('slowest') || text.contains('longest') || text.contains('ابطي') || text.contains('أبطأ')) {
+    if (text.contains('slowest') ||
+        text.contains('longest') ||
+        text.contains('ابطي') ||
+        text.contains('أبطأ')) {
       return Icons.hourglass_bottom_rounded;
     }
     return Icons.schedule_rounded;
@@ -898,16 +939,17 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
           child: Wrap(
             runSpacing: 4,
             children: [
-              Text(
-                isArabic ? 'أدوات سريعة' : 'Quick tools',
-                    style: Theme.of(sheetContext).textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        )),
+              Text(isArabic ? 'أدوات سريعة' : 'Quick tools',
+                  style: Theme.of(sheetContext).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      )),
               const SizedBox(height: 10),
               _toolTile(
                 sheetContext,
                 icon: Icons.my_location_rounded,
-                label: isArabic ? 'استخدم موقعي كنقطة بداية' : 'Use my location as origin',
+                label: isArabic
+                    ? 'استخدم موقعي كنقطة بداية'
+                    : 'Use my location as origin',
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _useMyLocationAsOrigin();
@@ -916,7 +958,9 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
               _toolTile(
                 sheetContext,
                 icon: Icons.flag_circle_rounded,
-                label: isArabic ? 'استخدم موقعي كوجهة' : 'Use my location as destination',
+                label: isArabic
+                    ? 'استخدم موقعي كوجهة'
+                    : 'Use my location as destination',
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _useMyLocationAsDestination();
@@ -925,7 +969,9 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
               _toolTile(
                 sheetContext,
                 icon: Icons.swap_vert_rounded,
-                label: isArabic ? 'تبديل البداية والوجهة' : 'Swap origin and destination',
+                label: isArabic
+                    ? 'تبديل البداية والوجهة'
+                    : 'Swap origin and destination',
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _swapFromTo();
@@ -953,7 +999,8 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
           color: Theme.of(context).colorScheme.primaryContainer,
           borderRadius: BorderRadius.circular(12),
         ),
-        child: Icon(icon, color: Theme.of(context).colorScheme.onPrimaryContainer),
+        child:
+            Icon(icon, color: Theme.of(context).colorScheme.onPrimaryContainer),
       ),
       title: Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
       trailing: const Icon(Icons.chevron_right_rounded),
@@ -1167,15 +1214,13 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       final limitedDataAr = estimate.sampleCount <= 3
           ? ' هذه النتيجة مبنية على عدد محدود من الرحلات المكتملة.'
           : '';
-      final averageSourceEn = estimate.isCommunityAggregate
-          ? 'community'
-          : 'your recorded';
+      final averageSourceEn =
+          estimate.isCommunityAggregate ? 'community' : 'your recorded';
       final samplePhraseEn = estimate.isCommunityAggregate
           ? '${estimate.sampleCount} completed community trips'
           : '${estimate.sampleCount} of your completed saved trips';
-      final sourceAr = estimate.isCommunityAggregate
-          ? 'المستخدمين'
-          : 'رحلاتك المسجلة';
+      final sourceAr =
+          estimate.isCommunityAggregate ? 'المستخدمين' : 'رحلاتك المسجلة';
       final responseEn = switch (statistic) {
         _TripStatistic.fastest =>
           'The fastest trip from $fromEn to $toEn is $minimum min, based on $samplePhraseEn.$lines$limitedDataEn',
@@ -1385,7 +1430,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       return;
     }
 
-    _showSuggestions(context, results, target);
+    _showSuggestions(results, target);
   }
 
   _WhichTarget? _whichTarget(String s) {
@@ -1425,7 +1470,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       return '';
     } else {
       final en =
-          RegExp(r'\bfrom\s*([^t]+?)(?:\s+to\s+.*)?$', caseSensitive: false);
+          RegExp(r'\bfrom\s*(.*?)(?:\s+to\s+.*)?$', caseSensitive: false);
       final ar = RegExp(r'\bمن\s*(.+?)(?:\s+إ?لى\s+.*)?$');
       final m1 = en.firstMatch(s);
       if (m1 != null) return m1.group(1)!.trim();
@@ -1438,24 +1483,44 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
   List<Map<String, dynamic>> _filterStations(String q) {
     final n = _norm(q);
     if (n.isEmpty) return const [];
-    final scored = _allStations
-        .map((station) {
-          final en = (station['name'] ?? '').toString();
-          final ar = (station['nameAr'] ?? '').toString();
-          return (
-            station: <String, dynamic>{
-              'en': en,
-              'ar': ar,
-              'lat': station['lat'],
-              'lng': station['lng'],
-            },
-            score: _score(n, _norm(en), _norm(ar)),
-          );
-        })
-        .where((item) => item.score > 0)
-        .toList()
-      ..sort((a, b) => b.score.compareTo(a.score));
-    return scored.take(8).map((item) => item.station).toList();
+    final merged = <String, (Map<String, dynamic> station, int score)>{};
+
+    for (final station in _allStations) {
+      final en = (station['name'] ?? '').toString();
+      final ar = (station['nameAr'] ?? '').toString();
+      final score = _score(n, _norm(en), _norm(ar));
+      if (score <= 0) continue;
+
+      // Interchange stations are present once per served line. Keep one clear
+      // result and expose every applicable line rather than repeated rows.
+      final stationKey = '${_norm(en)}|${_norm(ar)}';
+      final lineKey = (station['lineKey'] ?? '').toString();
+      final current = merged[stationKey];
+      if (current == null) {
+        merged[stationKey] = (
+          <String, dynamic>{
+            'en': en,
+            'ar': ar,
+            'lat': station['lat'],
+            'lng': station['lng'],
+            'lineKeys': <String>[lineKey],
+          },
+          score,
+        );
+        continue;
+      }
+
+      final lineKeys = List<String>.from(current.$1['lineKeys'] as List);
+      if (lineKey.isNotEmpty && !lineKeys.contains(lineKey)) {
+        lineKeys.add(lineKey);
+      }
+      current.$1['lineKeys'] = lineKeys;
+      merged[stationKey] = (current.$1, math.max(current.$2, score));
+    }
+
+    final results = merged.values.toList()
+      ..sort((a, b) => b.$2.compareTo(a.$2));
+    return results.take(6).map((item) => item.$1).toList();
   }
 
   List<String> _tripTimeSuggestions(String input) {
@@ -1556,58 +1621,33 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     _persistDraft();
   }
 
-  void _showSuggestions(BuildContext ctx, List<Map<String, dynamic>> results,
-      _WhichTarget target) {
-    _hideSuggestions();
+  void _showSuggestions(
+      List<Map<String, dynamic>> results, _WhichTarget target) {
     if (!_inputFocus.hasFocus) return;
-
-    final overlay = Overlay.of(ctx);
-    if (overlay == null) return;
-
-    _suggestionsOverlay = OverlayEntry(
-      builder: (_) {
-        return Positioned(
-          left: 12,
-          right: 12,
-          bottom: 84, // above input row
-          child: Material(
-            elevation: 8,
-            borderRadius: BorderRadius.circular(12),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxHeight: 280),
-              child: ListView.separated(
-                padding: const EdgeInsets.symmetric(vertical: 8),
-                shrinkWrap: true,
-                itemCount: results.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
-                itemBuilder: (_, i) {
-                  final s = results[i];
-                  final title =
-                      _replyLang() == _Lang.ar && (s['ar'] as String).isNotEmpty
-                          ? s['ar'] as String
-                          : s['en'] as String;
-                  return ListTile(
-                    dense: true,
-                    leading: const Icon(Icons.train_rounded),
-                    title: Text(title),
-                    onTap: () => _onPickSuggestion(title, target),
-                  );
-                },
-              ),
-            ),
-          ),
-        );
-      },
-    );
-    overlay.insert(_suggestionsOverlay!);
-  }
-
-  void _hideSuggestions() {
     _suggestionsOverlay?.remove();
     _suggestionsOverlay = null;
+    setState(() {
+      _stationSuggestions = results;
+      _stationSuggestionTarget = target;
+    });
+  }
+
+  void _hideSuggestions({bool rebuild = true}) {
+    _suggestionsOverlay?.remove();
+    _suggestionsOverlay = null;
+    if (_stationSuggestions.isEmpty && _stationSuggestionTarget == null) {
+      return;
+    }
+    _stationSuggestions = const [];
+    _stationSuggestionTarget = null;
+    if (rebuild && mounted) setState(() {});
   }
 
   void _onPickSuggestion(String pickedName, _WhichTarget target) {
+    // A station tap is a completed selection. Keep the keyboard available for
+    // the next field, but do not immediately reopen the picker with the same
+    // exact station name.
+    _hideSuggestions();
     final text = _ctrl.text;
 
     if (target == _WhichTarget.origin) {
@@ -1625,9 +1665,12 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         String newText = text;
         newText = newText
             .replaceAll(
-                RegExp(r'\bfrom\s+(.+?)(\s+to\b|$)', caseSensitive: false),
+                RegExp(r'\bfrom\s+.*?(?=\s+to\b|$)', caseSensitive: false),
                 'from $pickedName')
-            .replaceAll(RegExp(r'\bمن\s+(.+?)(\s+إ?لى\b|$)'), 'من $pickedName');
+            .replaceAll(
+              RegExp(r'\bمن\s+.*?(?=\s+إ?لى\b|$)'),
+              'من $pickedName',
+            );
 
         if (!hasToEn && !hasToAr) {
           newText += _replyLang() == _Lang.ar ? ' إلى ' : ' to ';
@@ -1661,7 +1704,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     _ctrl.selection =
         TextSelection.fromPosition(TextPosition(offset: _ctrl.text.length));
     _inputFocus.requestFocus();
-    _handleChanged(_ctrl.text);
+    if (mounted) setState(() {});
     _persistDraft();
   }
 
@@ -1887,6 +1930,201 @@ class _SuggestionCard extends StatelessWidget {
   }
 }
 
+class _StationSuggestionPanel extends StatelessWidget {
+  final List<Map<String, dynamic>> results;
+  final _WhichTarget target;
+  final bool isArabic;
+  final void Function(String name, _WhichTarget target) onPick;
+
+  const _StationSuggestionPanel({
+    required this.results,
+    required this.target,
+    required this.isArabic,
+    required this.onPick,
+  });
+
+  String _lineLabel(String key) {
+    final names = isArabic
+        ? <String, String>{
+            'blue': 'الخط الأزرق',
+            'red': 'الخط الأحمر',
+            'green': 'الخط الأخضر',
+            'orange': 'الخط البرتقالي',
+            'purple': 'الخط البنفسجي',
+            'yellow': 'الخط الأصفر',
+          }
+        : <String, String>{
+            'blue': 'Blue Line',
+            'red': 'Red Line',
+            'green': 'Green Line',
+            'orange': 'Orange Line',
+            'purple': 'Purple Line',
+            'yellow': 'Yellow Line',
+          };
+    return names[key] ?? key;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final title = target == _WhichTarget.origin
+        ? (isArabic ? 'محطة الانطلاق' : 'From station')
+        : (isArabic ? 'محطة الوصول' : 'To station');
+
+    return Directionality(
+      textDirection: isArabic ? ui.TextDirection.rtl : ui.TextDirection.ltr,
+      child: Material(
+        color: cs.surface,
+        elevation: 12,
+        shadowColor: Colors.black.withOpacity(.22),
+        clipBehavior: Clip.antiAlias,
+        borderRadius: BorderRadius.circular(20),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            border: Border.all(color: cs.outlineVariant.withOpacity(.7)),
+            borderRadius: BorderRadius.circular(20),
+          ),
+          child: Column(
+            children: [
+              Container(
+                width: double.infinity,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+                color: cs.primaryContainer.withOpacity(.5),
+                child: Row(
+                  children: [
+                    Icon(
+                      target == _WhichTarget.origin
+                          ? Icons.trip_origin_rounded
+                          : Icons.location_on_rounded,
+                      size: 18,
+                      color: cs.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelLarge
+                                ?.copyWith(fontWeight: FontWeight.w800),
+                          ),
+                          Text(
+                            isArabic
+                                ? 'اختر محطة مترو'
+                                : 'Select a metro station',
+                            style: Theme.of(context)
+                                .textTheme
+                                .labelSmall
+                                ?.copyWith(
+                                  color: cs.onSurface.withOpacity(.62),
+                                ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    Text(
+                      '${results.length}',
+                      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                            color: cs.primary,
+                            fontWeight: FontWeight.w800,
+                          ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  itemCount: results.length,
+                  separatorBuilder: (_, __) => Divider(
+                    height: 1,
+                    indent: 68,
+                    color: cs.outlineVariant.withOpacity(.55),
+                  ),
+                  itemBuilder: (_, index) {
+                    final station = results[index];
+                    final stationName =
+                        isArabic && (station['ar'] as String).isNotEmpty
+                            ? station['ar'] as String
+                            : station['en'] as String;
+                    final lineKeys = List<String>.from(
+                      station['lineKeys'] as List,
+                    );
+                    final primaryColor =
+                        metroLineColors[lineKeys.first] ?? cs.primary;
+
+                    return ListTile(
+                      dense: true,
+                      minVerticalPadding: 9,
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 16),
+                      leading: Container(
+                        width: 38,
+                        height: 38,
+                        decoration: BoxDecoration(
+                          color: primaryColor.withOpacity(.14),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.subway_rounded,
+                          size: 21,
+                          color: primaryColor,
+                        ),
+                      ),
+                      title: Text(
+                        stationName,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w800,
+                            ),
+                      ),
+                      subtitle: Text(
+                        lineKeys.map(_lineLabel).join('  |  '),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style:
+                            Theme.of(context).textTheme.labelMedium?.copyWith(
+                                  color: cs.onSurface.withOpacity(.62),
+                                ),
+                      ),
+                      trailing: SizedBox(
+                        width: 24.0 * lineKeys.length,
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            for (final key in lineKeys)
+                              Container(
+                                width: 10,
+                                height: 10,
+                                margin: const EdgeInsetsDirectional.only(
+                                  start: 2,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: metroLineColors[key] ?? cs.primary,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                      onTap: () => onPick(stationName, target),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _WelcomePanel extends StatelessWidget {
   final bool isArabic;
   final ValueChanged<String> onPrompt;
@@ -1919,7 +2157,9 @@ class _WelcomePanel extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
-              isArabic ? 'ابدأ رحلتك بذكاء' : 'Plan your journey with confidence',
+              isArabic
+                  ? 'ابدأ رحلتك بذكاء'
+                  : 'Plan your journey with confidence',
               style: Theme.of(context).textTheme.titleSmall?.copyWith(
                     color: cs.onSurface,
                     fontWeight: FontWeight.w900,
@@ -1946,9 +2186,11 @@ class _WelcomePanel extends StatelessWidget {
                   onPressed: () => onPrompt(tripTimePrompt),
                 ),
                 ActionChip(
-                  avatar: const Icon(Icons.location_searching_rounded, size: 16),
+                  avatar:
+                      const Icon(Icons.location_searching_rounded, size: 16),
                   label: Text(isArabic ? 'أقرب محطة' : 'Nearest station'),
-                  onPressed: () => onPrompt(isArabic ? 'أقرب محطة' : 'Nearest station'),
+                  onPressed: () =>
+                      onPrompt(isArabic ? 'أقرب محطة' : 'Nearest station'),
                 ),
               ],
             ),
@@ -2107,9 +2349,15 @@ class _TripAnalyticsCard extends StatelessWidget {
             const SizedBox(height: 10),
             Row(
               children: [
-                Expanded(child: _metric(context, isArabic ? 'المتوسط' : 'Average', average)),
-                Expanded(child: _metric(context, isArabic ? 'الأسرع' : 'Fastest', fastest)),
-                Expanded(child: _metric(context, isArabic ? 'الأبطأ' : 'Slowest', slowest)),
+                Expanded(
+                    child: _metric(
+                        context, isArabic ? 'المتوسط' : 'Average', average)),
+                Expanded(
+                    child: _metric(
+                        context, isArabic ? 'الأسرع' : 'Fastest', fastest)),
+                Expanded(
+                    child: _metric(
+                        context, isArabic ? 'الأبطأ' : 'Slowest', slowest)),
               ],
             ),
             const SizedBox(height: 8),
