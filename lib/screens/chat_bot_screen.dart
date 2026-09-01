@@ -1,4 +1,6 @@
 // lib/screens/chat_bot_screen.dart
+import 'dart:async';
+import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:ui' as ui show TextDirection;
 
@@ -59,12 +61,17 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
   static const _kDraftKey = 'chatbot_draft_v1';
   static const _kRecentRoutesKey =
       'chatbot_recent_routes_v1'; // List<String> like "from||to"
+  static const _kConversationKey = 'chatbot_conversation_v1';
+  static const _kConversationExpiresAtKey =
+      'chatbot_conversation_expires_at_v1';
 
   // Recent routes in memory
   List<(String from, String to)> _recentRoutes = [];
 
   // Initial greeting control
   bool _booted = false;
+  bool _conversationRestored = false;
+  Timer? _conversationExpiryTimer;
 
   bool get _localeIsArabic => Localizations.localeOf(context)
       .languageCode
@@ -106,17 +113,25 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     super.didChangeDependencies();
     if (_booted) return;
     _booted = true;
+    if (_conversationRestored && _messages.isEmpty) {
+      _addGreeting();
+      setState(() {});
+    }
+  }
+
+  void _addGreeting() {
     _messages.add(_Msg.bot(
       'Hi! I can help with Darb. Try “Nearest station”, “Metro hours”, or “How long does it take from KAFD to STC?”.',
       'مرحباً! أستطيع مساعدتك في درب. جرّب "أقرب محطة"، "ساعات المترو"، أو "كم تستغرق الرحلة من المركز المالي إلى STC؟".',
       lang: _localeIsArabic ? _Lang.ar : _Lang.en,
     ));
-    setState(() {}); // show greeting
+    _persistConversation();
   }
 
   @override
   void dispose() {
     _hideSuggestions(rebuild: false);
+    _conversationExpiryTimer?.cancel();
     _persistDraft(); // store last typed text
     _ctrl.dispose();
     _inputFocus.dispose();
@@ -209,7 +224,190 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         })
         .whereType<(String, String)>()
         .toList();
+
+    final expiresAt = prefs.getInt(_kConversationExpiresAtKey);
+    final now = DateTime.now();
+    if (expiresAt != null && now.millisecondsSinceEpoch < expiresAt) {
+      final rawConversation = prefs.getString(_kConversationKey);
+      if (rawConversation != null) {
+        try {
+          final decoded = jsonDecode(rawConversation);
+          if (decoded is List) {
+            for (final item in decoded) {
+              if (item is! Map) continue;
+              final en = item['en']?.toString() ?? '';
+              final ar = item['ar']?.toString() ?? en;
+              if (en.isEmpty && ar.isEmpty) continue;
+              final lang = item['lang'] == 'ar' ? _Lang.ar : _Lang.en;
+              _messages.add(_restoreMessage(item, en, ar, lang));
+            }
+          }
+        } catch (_) {
+          await _clearExpiredConversation(prefs);
+        }
+      }
+    } else {
+      await _clearExpiredConversation(prefs);
+    }
+
+    _conversationRestored = true;
+    if (_booted && _messages.isEmpty) _addGreeting();
+    _scheduleConversationExpiry();
     if (mounted) setState(() {});
+  }
+
+  DateTime _nextMidnight() {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, now.day).add(const Duration(days: 1));
+  }
+
+  void _scheduleConversationExpiry() {
+    _conversationExpiryTimer?.cancel();
+    _conversationExpiryTimer =
+        Timer(_nextMidnight().difference(DateTime.now()), () async {
+      final prefs = await SharedPreferences.getInstance();
+      await _clearExpiredConversation(prefs);
+      if (!mounted) return;
+      setState(() => _messages.clear());
+    });
+  }
+
+  Future<void> _clearExpiredConversation(SharedPreferences prefs) async {
+    await prefs.remove(_kConversationKey);
+    await prefs.remove(_kConversationExpiresAtKey);
+  }
+
+  Future<void> _persistConversation() async {
+    if (!_conversationRestored) return;
+    final prefs = await SharedPreferences.getInstance();
+    final payload = _messages.map((message) {
+      final serialized = <String, dynamic>{
+        'en': message.textEn,
+        'ar': message.textAr,
+        'isMe': message.isMe,
+        'lang': message.lang == _Lang.ar ? 'ar' : 'en',
+      };
+      final analytics = _analyticsPayload(message);
+      if (analytics != null) serialized['analytics'] = analytics;
+      return serialized;
+    }).toList(growable: false);
+    await prefs.setString(_kConversationKey, jsonEncode(payload));
+    await prefs.setInt(
+      _kConversationExpiresAtKey,
+      _nextMidnight().millisecondsSinceEpoch,
+    );
+    _scheduleConversationExpiry();
+  }
+
+  _Msg _restoreMessage(
+    Map item,
+    String en,
+    String ar,
+    _Lang lang,
+  ) {
+    if (item['isMe'] == true) return _Msg.user(en, ar, lang: lang);
+
+    final rawAnalytics = item['analytics'];
+    if (rawAnalytics is! Map) return _Msg.bot(en, ar, lang: lang);
+
+    final analytics = Map<Object?, Object?>.from(rawAnalytics);
+    final fromEn = analytics['fromEn']?.toString().trim() ?? '';
+    final toEn = analytics['toEn']?.toString().trim() ?? '';
+    final fromAr = analytics['fromAr']?.toString().trim() ?? '';
+    final toAr = analytics['toAr']?.toString().trim() ?? '';
+    final statistic = _tripStatisticFromKey(analytics['statistic']?.toString());
+    final average = _savedInt(analytics['averageSeconds']);
+    final minimum = _savedInt(analytics['minimumSeconds']);
+    final maximum = _savedInt(analytics['maximumSeconds']);
+    final sampleCount = _savedInt(analytics['sampleCount']);
+
+    if (fromEn.isEmpty ||
+        toEn.isEmpty ||
+        fromAr.isEmpty ||
+        toAr.isEmpty ||
+        statistic == null ||
+        average < 0 ||
+        minimum < 0 ||
+        maximum < 0 ||
+        sampleCount <= 0) {
+      return _Msg.bot(en, ar, lang: lang);
+    }
+
+    final rawLines = analytics['commonLines'];
+    final lines = rawLines is List
+        ? rawLines
+            .map((line) => line.toString())
+            .where((line) => line.isNotEmpty)
+            .toList()
+        : const <String>[];
+
+    return _Msg.analytics(
+      textEn: en,
+      textAr: ar,
+      estimate: TripTimeEstimate(
+        averageSeconds: average,
+        minimumSeconds: minimum,
+        maximumSeconds: maximum,
+        sampleCount: sampleCount,
+        commonLines: lines,
+        averageTransfers: _savedInt(analytics['averageTransfers']),
+        isCommunityAggregate: analytics['isCommunityAggregate'] == true,
+      ),
+      fromEn: fromEn,
+      toEn: toEn,
+      fromAr: fromAr,
+      toAr: toAr,
+      statistic: statistic,
+      lang: lang,
+    );
+  }
+
+  Map<String, dynamic>? _analyticsPayload(_Msg message) {
+    final estimate = message.estimate;
+    final statistic = message.statistic;
+    if (estimate == null ||
+        statistic == null ||
+        message.fromEn == null ||
+        message.toEn == null ||
+        message.fromAr == null ||
+        message.toAr == null) {
+      return null;
+    }
+
+    return <String, dynamic>{
+      'averageSeconds': estimate.averageSeconds,
+      'minimumSeconds': estimate.minimumSeconds,
+      'maximumSeconds': estimate.maximumSeconds,
+      'sampleCount': estimate.sampleCount,
+      'commonLines': estimate.commonLines,
+      'averageTransfers': estimate.averageTransfers,
+      'isCommunityAggregate': estimate.isCommunityAggregate,
+      'fromEn': message.fromEn,
+      'toEn': message.toEn,
+      'fromAr': message.fromAr,
+      'toAr': message.toAr,
+      'statistic': _tripStatisticKey(statistic),
+    };
+  }
+
+  int _savedInt(Object? value) =>
+      value is int ? value : int.tryParse(value?.toString() ?? '') ?? -1;
+
+  String _tripStatisticKey(_TripStatistic statistic) {
+    return switch (statistic) {
+      _TripStatistic.average => 'average',
+      _TripStatistic.fastest => 'fastest',
+      _TripStatistic.slowest => 'slowest',
+    };
+  }
+
+  _TripStatistic? _tripStatisticFromKey(String? value) {
+    return switch (value) {
+      'average' => _TripStatistic.average,
+      'fastest' => _TripStatistic.fastest,
+      'slowest' => _TripStatistic.slowest,
+      _ => null,
+    };
   }
 
   Future<void> _persistDraft() async {
@@ -496,136 +694,136 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
             child: Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
               child: Container(
-                  padding: const EdgeInsets.all(6),
-                  decoration: BoxDecoration(
-                    color: cs.surfaceContainerHighest.withOpacity(.62),
-                    borderRadius: BorderRadius.circular(28),
-                    border: Border.all(color: cs.outline.withOpacity(.28)),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withOpacity(
-                          Theme.of(context).brightness == Brightness.dark
-                              ? .12
-                              : .05,
-                        ),
-                        blurRadius: 16,
-                        offset: const Offset(0, 6),
+                padding: const EdgeInsets.all(6),
+                decoration: BoxDecoration(
+                  color: cs.surfaceContainerHighest.withOpacity(.62),
+                  borderRadius: BorderRadius.circular(28),
+                  border: Border.all(color: cs.outline.withOpacity(.28)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withOpacity(
+                        Theme.of(context).brightness == Brightness.dark
+                            ? .12
+                            : .05,
                       ),
-                    ],
-                  ),
-                  child: Row(
-                    children: [
-                      // Mic (press & hold)
-                      GestureDetector(
-                        onLongPressStart: (_) {
-                          if (_sttAvailable) _startMic();
-                        },
-                        onLongPressEnd: (_) {
-                          _stopMic(sendOnStop: true);
-                        },
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 160),
-                          curve: Curves.easeOut,
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            shape: BoxShape.circle,
-                            color: _holdToTalk
-                                ? Theme.of(context)
-                                    .colorScheme
-                                    .primary
-                                    .withOpacity(0.18)
-                                : Colors.transparent,
-                            border: Border.all(
-                              color: _listening
-                                  ? Theme.of(context).colorScheme.primary
-                                  : Theme.of(context).colorScheme.outline,
-                            ),
+                      blurRadius: 16,
+                      offset: const Offset(0, 6),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  children: [
+                    // Mic (press & hold)
+                    GestureDetector(
+                      onLongPressStart: (_) {
+                        if (_sttAvailable) _startMic();
+                      },
+                      onLongPressEnd: (_) {
+                        _stopMic(sendOnStop: true);
+                      },
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 160),
+                        curve: Curves.easeOut,
+                        width: 44,
+                        height: 44,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: _holdToTalk
+                              ? Theme.of(context)
+                                  .colorScheme
+                                  .primary
+                                  .withOpacity(0.18)
+                              : Colors.transparent,
+                          border: Border.all(
+                            color: _listening
+                                ? Theme.of(context).colorScheme.primary
+                                : Theme.of(context).colorScheme.outline,
                           ),
-                          child: IconButton(
-                            tooltip: _localeIsArabic ? 'تحدث' : 'Speak',
-                            onPressed: _sttAvailable
-                                ? () async {
-                                    if (_listening) {
-                                      await _stopMic(sendOnStop: true);
-                                    } else {
-                                      await _startMic();
-                                    }
+                        ),
+                        child: IconButton(
+                          tooltip: _localeIsArabic ? 'تحدث' : 'Speak',
+                          onPressed: _sttAvailable
+                              ? () async {
+                                  if (_listening) {
+                                    await _stopMic(sendOnStop: true);
+                                  } else {
+                                    await _startMic();
                                   }
-                                : null,
-                            icon: Icon(
-                              _listening
-                                  ? Icons.mic_rounded
-                                  : Icons.mic_none_rounded,
-                            ),
+                                }
+                              : null,
+                          icon: Icon(
+                            _listening
+                                ? Icons.mic_rounded
+                                : Icons.mic_none_rounded,
                           ),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                    ),
+                    const SizedBox(width: 8),
 
-                      // Text box
-                      Expanded(
-                        child: TextField(
-                          controller: _ctrl,
-                          focusNode: _inputFocus,
-                          textInputAction: TextInputAction.send,
-                          onSubmitted: (_) => _send(),
-                          onChanged: (val) {
-                            _handleChanged(val);
-                            _persistDraft(); // live-persist draft as they type
-                          },
-                          minLines: 1,
-                          maxLines: 4,
-                          decoration: InputDecoration(
-                            hintText: getTranslated(
-                                        context, 'bot.typeYourMessage') ==
-                                    'bot.typeYourMessage'
-                                ? (_localeIsArabic
-                                    ? 'اكتب رسالتك'
-                                    : 'Type your message')
-                                : getTranslated(context, 'bot.typeYourMessage'),
-                            filled: true,
-                            border: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(26),
-                              borderSide: BorderSide.none,
-                            ),
-                            enabledBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(26),
-                              borderSide: BorderSide.none,
-                            ),
-                            focusedBorder: OutlineInputBorder(
-                              borderRadius: BorderRadius.circular(26),
-                              borderSide:
-                                  BorderSide(color: cs.primary.withOpacity(.5)),
-                            ),
-                            fillColor: cs.surface,
-                            contentPadding: const EdgeInsets.symmetric(
-                                horizontal: 16, vertical: 12),
+                    // Text box
+                    Expanded(
+                      child: TextField(
+                        controller: _ctrl,
+                        focusNode: _inputFocus,
+                        textInputAction: TextInputAction.send,
+                        onSubmitted: (_) => _send(),
+                        onChanged: (val) {
+                          _handleChanged(val);
+                          _persistDraft(); // live-persist draft as they type
+                        },
+                        minLines: 1,
+                        maxLines: 4,
+                        decoration: InputDecoration(
+                          hintText: getTranslated(
+                                      context, 'bot.typeYourMessage') ==
+                                  'bot.typeYourMessage'
+                              ? (_localeIsArabic
+                                  ? 'اكتب رسالتك'
+                                  : 'Type your message')
+                              : getTranslated(context, 'bot.typeYourMessage'),
+                          filled: true,
+                          border: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(26),
+                            borderSide: BorderSide.none,
                           ),
+                          enabledBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(26),
+                            borderSide: BorderSide.none,
+                          ),
+                          focusedBorder: OutlineInputBorder(
+                            borderRadius: BorderRadius.circular(26),
+                            borderSide:
+                                BorderSide(color: cs.primary.withOpacity(.5)),
+                          ),
+                          fillColor: cs.surface,
+                          contentPadding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 12),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                    ),
+                    const SizedBox(width: 8),
 
-                      // Send
-                      IconButton.filled(
-                        style: IconButton.styleFrom(
-                          minimumSize: const Size(48, 48),
-                          backgroundColor: cs.primary,
-                          foregroundColor: cs.onPrimary,
-                        ),
-                        onPressed: _busy ? null : _send,
-                        icon: _busy
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator())
-                            : const Icon(Icons.send_rounded),
+                    // Send
+                    IconButton.filled(
+                      style: IconButton.styleFrom(
+                        minimumSize: const Size(48, 48),
+                        backgroundColor: cs.primary,
+                        foregroundColor: cs.onPrimary,
                       ),
-                    ],
-                  ),
+                      onPressed: _busy ? null : _send,
+                      icon: _busy
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child: CircularProgressIndicator())
+                          : const Icon(Icons.send_rounded),
+                    ),
+                  ],
                 ),
               ),
             ),
+          ),
         ],
       ),
     );
@@ -1214,13 +1412,15 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       final limitedDataAr = estimate.sampleCount <= 3
           ? ' هذه النتيجة مبنية على عدد محدود من الرحلات المكتملة.'
           : '';
-      final averageSourceEn =
-          estimate.isCommunityAggregate ? 'community' : 'your recorded';
+      final averageSourceEn = estimate.isCommunityAggregate
+          ? 'recorded community'
+          : 'your recorded';
       final samplePhraseEn = estimate.isCommunityAggregate
-          ? '${estimate.sampleCount} completed community trips'
+          ? '${estimate.sampleCount} completed community trips with recorded station timestamps'
           : '${estimate.sampleCount} of your completed saved trips';
-      final sourceAr =
-          estimate.isCommunityAggregate ? 'المستخدمين' : 'رحلاتك المسجلة';
+      final sourceAr = estimate.isCommunityAggregate
+          ? 'رحلات المستخدمين المسجلة بتوقيتات المحطات'
+          : 'رحلاتك المسجلة';
       final responseEn = switch (statistic) {
         _TripStatistic.fastest =>
           'The fastest trip from $fromEn to $toEn is $minimum min, based on $samplePhraseEn.$lines$limitedDataEn',
@@ -1354,11 +1554,15 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
   }
 
   // ---------- message helpers ----------
-  void _addUserText(String en, String ar, {required _Lang lang}) =>
-      setState(() => _messages.add(_Msg.user(en, ar, lang: lang)));
+  void _addUserText(String en, String ar, {required _Lang lang}) {
+    setState(() => _messages.add(_Msg.user(en, ar, lang: lang)));
+    _persistConversation();
+  }
 
-  void _addBotText(String en, String ar, {required _Lang lang}) =>
-      setState(() => _messages.add(_Msg.bot(en, ar, lang: lang)));
+  void _addBotText(String en, String ar, {required _Lang lang}) {
+    setState(() => _messages.add(_Msg.bot(en, ar, lang: lang)));
+    _persistConversation();
+  }
 
   void _addBotAction({
     required String textEn,
@@ -1368,6 +1572,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
   }) {
     setState(() =>
         _messages.add(_Msg.bot(textEn, textAr, action: action, lang: lang)));
+    _persistConversation();
   }
 
   void _addAnalyticsMessage({
@@ -1396,6 +1601,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         ),
       );
     });
+    _persistConversation();
   }
 
   // ===================== Autocomplete logic =====================
