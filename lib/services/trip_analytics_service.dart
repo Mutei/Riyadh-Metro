@@ -162,7 +162,6 @@ class TripAnalyticsService {
     var totalSeconds = 0;
     var minimumSeconds = samples.first.durationSeconds;
     var maximumSeconds = samples.first.durationSeconds;
-    final lineCounts = <String, int>{};
     var transferTotal = 0;
 
     for (final sample in samples) {
@@ -183,22 +182,41 @@ class TripAnalyticsService {
         uniqueLines.add(line);
       }
       if (uniqueLines.length > 1) transferTotal += uniqueLines.length - 1;
-      for (final line in uniqueLines.toSet()) {
-        lineCounts[line] = (lineCounts[line] ?? 0) + 1;
-      }
     }
 
-    final commonLines = lineCounts.entries.toList()
-      ..sort((a, b) => b.value.compareTo(a.value));
     return TripTimeEstimate(
       averageSeconds: (totalSeconds / samples.length).round(),
       minimumSeconds: minimumSeconds,
       maximumSeconds: maximumSeconds,
       sampleCount: samples.length,
-      commonLines: commonLines.take(3).map((entry) => entry.key).toList(),
+      commonLines: _rankedLines(samples).take(3).toList(),
+      fastestLines: _rankedLines(
+        samples.where((sample) => sample.durationSeconds == minimumSeconds),
+      ),
+      slowestLines: _rankedLines(
+        samples.where((sample) => sample.durationSeconds == maximumSeconds),
+      ),
       averageTransfers: (transferTotal / samples.length).round(),
       isCommunityAggregate: true,
     );
+  }
+
+  /// Lines are associated with the matching fastest/slowest samples, never
+  /// borrowed from the overall community average. Tied samples are combined.
+  static List<String> _rankedLines(Iterable<_TripSample> samples) {
+    final counts = <String, int>{};
+    for (final sample in samples) {
+      for (final line in sample.lines.map((line) => line.trim()).toSet()) {
+        if (line.isEmpty) continue;
+        counts[line] = (counts[line] ?? 0) + 1;
+      }
+    }
+    final ranked = counts.entries.toList()
+      ..sort((a, b) {
+        final byCount = b.value.compareTo(a.value);
+        return byCount != 0 ? byCount : a.key.compareTo(b.key);
+      });
+    return ranked.map((entry) => entry.key).toList(growable: false);
   }
 
   static String? _nonEmpty(dynamic value) {
@@ -233,6 +251,8 @@ class TripTimeEstimate {
   final int maximumSeconds;
   final int sampleCount;
   final List<String> commonLines;
+  final List<String> fastestLines;
+  final List<String> slowestLines;
   final int averageTransfers;
   final bool isCommunityAggregate;
 
@@ -242,6 +262,8 @@ class TripTimeEstimate {
     required this.maximumSeconds,
     required this.sampleCount,
     required this.commonLines,
+    required this.fastestLines,
+    required this.slowestLines,
     required this.averageTransfers,
     required this.isCommunityAggregate,
   });

@@ -350,6 +350,8 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         maximumSeconds: maximum,
         sampleCount: sampleCount,
         commonLines: lines,
+        fastestLines: _savedLines(analytics['fastestLines']),
+        slowestLines: _savedLines(analytics['slowestLines']),
         averageTransfers: _savedInt(analytics['averageTransfers']),
         isCommunityAggregate: analytics['isCommunityAggregate'] == true,
       ),
@@ -380,6 +382,8 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       'maximumSeconds': estimate.maximumSeconds,
       'sampleCount': estimate.sampleCount,
       'commonLines': estimate.commonLines,
+      'fastestLines': estimate.fastestLines,
+      'slowestLines': estimate.slowestLines,
       'averageTransfers': estimate.averageTransfers,
       'isCommunityAggregate': estimate.isCommunityAggregate,
       'fromEn': message.fromEn,
@@ -392,6 +396,14 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
 
   int _savedInt(Object? value) =>
       value is int ? value : int.tryParse(value?.toString() ?? '') ?? -1;
+
+  List<String> _savedLines(Object? value) {
+    if (value is! List) return const <String>[];
+    return value
+        .map((line) => line.toString().trim())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
+  }
 
   String _tripStatisticKey(_TripStatistic statistic) {
     return switch (statistic) {
@@ -1400,6 +1412,18 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       final linesAr = estimate.commonLines.isEmpty
           ? ''
           : ' الخطوط الشائعة: ${estimate.commonLines.join('، ')}.';
+      final fastestLines = estimate.fastestLines.isEmpty
+          ? lines
+          : ' Lines on the fastest recorded trip: ${estimate.fastestLines.join(', ')}.';
+      final fastestLinesAr = estimate.fastestLines.isEmpty
+          ? linesAr
+          : ' الخطوط المستخدمة في أسرع رحلة مسجلة: ${estimate.fastestLines.join('، ')}.';
+      final slowestLines = estimate.slowestLines.isEmpty
+          ? lines
+          : ' Lines on the longest recorded trip: ${estimate.slowestLines.join(', ')}.';
+      final slowestLinesAr = estimate.slowestLines.isEmpty
+          ? linesAr
+          : ' الخطوط المستخدمة في أطول رحلة مسجلة: ${estimate.slowestLines.join('، ')}.';
       final transferText = estimate.averageTransfers == 0
           ? ''
           : ' Typical transfers: ${estimate.averageTransfers}.';
@@ -1423,17 +1447,17 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
           : 'رحلاتك المسجلة';
       final responseEn = switch (statistic) {
         _TripStatistic.fastest =>
-          'The fastest trip from $fromEn to $toEn is $minimum min, based on $samplePhraseEn.$lines$limitedDataEn',
+          'The fastest recorded trip from $fromEn to $toEn is $minimum min.$fastestLines$limitedDataEn',
         _TripStatistic.slowest =>
-          'The slowest trip from $fromEn to $toEn is $maximum min, based on $samplePhraseEn.$lines$limitedDataEn',
+          'The longest recorded trip from $fromEn to $toEn is $maximum min.$slowestLines$limitedDataEn',
         _TripStatistic.average =>
           'From $fromEn to $toEn, the $averageSourceEn average is $average min across $samplePhraseEn. Typical range: $minimum-$maximum min.$lines$transferText$limitedDataEn',
       };
       final responseAr = switch (statistic) {
         _TripStatistic.fastest =>
-          'أسرع رحلة مسجلة ضمن $sourceAr من $fromAr إلى $toAr هي $minimum دقيقة، استنادًا إلى ${estimate.sampleCount} رحلة مكتملة.$linesAr$limitedDataAr',
+          'أسرع رحلة مسجلة من $fromAr إلى $toAr هي $minimum دقيقة.$fastestLinesAr$limitedDataAr',
         _TripStatistic.slowest =>
-          'أبطأ رحلة مسجلة ضمن $sourceAr من $fromAr إلى $toAr هي $maximum دقيقة، استنادًا إلى ${estimate.sampleCount} رحلة مكتملة.$linesAr$limitedDataAr',
+          'أطول رحلة مسجلة من $fromAr إلى $toAr هي $maximum دقيقة.$slowestLinesAr$limitedDataAr',
         _TripStatistic.average =>
           'متوسط وقت الرحلة من $fromAr إلى $toAr في $sourceAr هو $average دقيقة عبر ${estimate.sampleCount} رحلة مكتملة. المدى المعتاد: $minimum-$maximum دقيقة.$linesAr$transferTextAr$limitedDataAr',
       };
@@ -2481,6 +2505,29 @@ class _TripAnalyticsCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
+    final lines = estimate.commonLines
+        .map((line) => line.trim().toLowerCase())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
+    final specificLines = switch (statistic) {
+      _TripStatistic.average => lines,
+      _TripStatistic.fastest => estimate.fastestLines
+          .map((line) => line.trim().toLowerCase())
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false),
+      _TripStatistic.slowest => estimate.slowestLines
+          .map((line) => line.trim().toLowerCase())
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false),
+    };
+    final linesTitle = switch (statistic) {
+      _TripStatistic.average =>
+        isArabic ? 'الخطوط الأكثر استخدامًا' : 'Common community lines',
+      _TripStatistic.fastest =>
+        isArabic ? 'خطوط أسرع رحلة مسجلة' : 'Lines on the fastest trip',
+      _TripStatistic.slowest =>
+        isArabic ? 'خطوط أطول رحلة مسجلة' : 'Lines on the longest trip',
+    };
     final average = _minutes(estimate.averageSeconds);
     final fastest = _minutes(estimate.minimumSeconds);
     final slowest = _minutes(estimate.maximumSeconds);
@@ -2553,19 +2600,27 @@ class _TripAnalyticsCard extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 10),
-            Row(
-              children: [
-                Expanded(
-                    child: _metric(
-                        context, isArabic ? 'المتوسط' : 'Average', average)),
-                Expanded(
-                    child: _metric(
-                        context, isArabic ? 'الأسرع' : 'Fastest', fastest)),
-                Expanded(
-                    child: _metric(
-                        context, isArabic ? 'الأبطأ' : 'Slowest', slowest)),
-              ],
-            ),
+            if (statistic == _TripStatistic.average)
+              Row(
+                children: [
+                  Expanded(
+                      child: _metric(
+                          context, isArabic ? 'المتوسط' : 'Average', average)),
+                  Expanded(
+                      child: _metric(
+                          context, isArabic ? 'الأسرع' : 'Fastest', fastest)),
+                  Expanded(
+                      child: _metric(
+                          context, isArabic ? 'الأبطأ' : 'Slowest', slowest)),
+                ],
+              ),
+            if (specificLines.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              _CommunityLinesPanel(
+                lines: specificLines,
+                title: linesTitle,
+              ),
+            ],
             const SizedBox(height: 8),
             Text(
               isArabic
@@ -2604,6 +2659,151 @@ class _TripAnalyticsCard extends StatelessWidget {
               ),
         ),
       ],
+    );
+  }
+}
+
+/// Shows aggregate line usage without implying that it is one exact route.
+class _CommunityLinesPanel extends StatelessWidget {
+  final List<String> lines;
+  final String title;
+
+  const _CommunityLinesPanel({required this.lines, required this.title});
+
+  Color _colorFor(String line, Color fallback) {
+    return metroLineColors[line.toLowerCase()] ?? fallback;
+  }
+
+  String _labelFor(String line) {
+    if (line.isEmpty) return 'Metro line';
+    final english = '${line[0].toUpperCase()}${line.substring(1)}';
+    return '$english Line';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+    final colors = lines.map((line) => _colorFor(line, cs.primary)).toList();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: cs.surface.withOpacity(.64),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: cs.primary.withOpacity(.14)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.route_rounded, size: 17, color: cs.primary),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: cs.onSurface,
+                        fontWeight: FontWeight.w900,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 9),
+          _LineUsageStrip(colors: colors, accent: cs.primary),
+          const SizedBox(height: 9),
+          Wrap(
+            spacing: 7,
+            runSpacing: 7,
+            children: [
+              for (var index = 0; index < lines.length; index++)
+                _CommunityLineBadge(
+                  label: _labelFor(lines[index]),
+                  color: colors[index],
+                ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LineUsageStrip extends StatelessWidget {
+  final List<Color> colors;
+  final Color accent;
+
+  const _LineUsageStrip({required this.colors, required this.accent});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Icon(Icons.trip_origin_rounded, size: 15, color: accent),
+        const SizedBox(width: 6),
+        for (var index = 0; index < colors.length; index++) ...[
+          Expanded(
+            child: Container(
+              height: 5,
+              decoration: BoxDecoration(
+                color: colors[index],
+                borderRadius: BorderRadius.horizontal(
+                  left: index == 0 ? const Radius.circular(99) : Radius.zero,
+                  right: index == colors.length - 1
+                      ? const Radius.circular(99)
+                      : Radius.zero,
+                ),
+              ),
+            ),
+          ),
+          if (index != colors.length - 1)
+            Container(
+                width: 3,
+                height: 5,
+                color: Theme.of(context).colorScheme.surface),
+        ],
+        const SizedBox(width: 6),
+        Icon(Icons.location_on_rounded, size: 16, color: accent),
+      ],
+    );
+  }
+}
+
+class _CommunityLineBadge extends StatelessWidget {
+  final String label;
+  final Color color;
+
+  const _CommunityLineBadge({required this.label, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: color.withOpacity(.13),
+        borderRadius: BorderRadius.circular(99),
+        border: Border.all(color: color.withOpacity(.42)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
+          const SizedBox(width: 5),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: color,
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+        ],
+      ),
     );
   }
 }

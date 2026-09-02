@@ -59,7 +59,8 @@ void main() {
     expect(estimate.commonLines, ['red']);
   });
 
-  test('aggregates valid actual observations and rejects reverse direction', () {
+  test('aggregates valid actual observations and rejects reverse direction',
+      () {
     final first = _completedTrip(<Object?, Object?>{
       'a': _segment(
         from: 'STC',
@@ -73,7 +74,7 @@ void main() {
       'a': _segment(
         from: 'STC',
         to: 'Al Wurud 2',
-        line: 'blue',
+        line: 'red',
         startedAt: 2000,
         finishedAt: 8000,
       ),
@@ -95,6 +96,8 @@ void main() {
     expect(estimate.minimumSeconds, 4);
     expect(estimate.maximumSeconds, 6);
     expect(estimate.sampleCount, 2);
+    expect(estimate.fastestLines, ['blue']);
+    expect(estimate.slowestLines, ['red']);
     expect(reverse, isNull);
   });
 
@@ -131,7 +134,8 @@ void main() {
     expect(estimate, isNull);
   });
 
-  test('keeps reliable station boundaries when an unrelated segment is malformed',
+  test(
+      'keeps reliable station boundaries when an unrelated segment is malformed',
       () {
     final first = _completedTrip(<Object?, Object?>{
       'a': _segment(
