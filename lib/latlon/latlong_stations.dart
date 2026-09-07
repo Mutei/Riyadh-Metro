@@ -241,7 +241,7 @@ const List<Map<String, dynamic>> blueStations = [
   },
   {
     'name': 'KAFD',
-    'nameAr': 'الركز المالي',
+    'nameAr': 'المركز المالي',
     'lat': 24.767476415943126,
     'lng': 46.64307080442587
   },

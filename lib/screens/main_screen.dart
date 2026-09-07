@@ -1632,7 +1632,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _nextMinDist = math.min(_nextMinDist, dNext);
 
         const double ENTER_RADIUS = 120.0;
-        const double ARRIVE_RADIUS = 45.0;
+        // const double ARRIVE_RADIUS = 45.0;
+        const double ARRIVE_RADIUS = 80;
         const int LINGER_SECS = 2;
         const double PASS_DELTA = 20.0;
 

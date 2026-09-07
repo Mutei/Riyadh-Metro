@@ -61,12 +61,15 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
   static const _kDraftKey = 'chatbot_draft_v1';
   static const _kRecentRoutesKey =
       'chatbot_recent_routes_v1'; // List<String> like "from||to"
+  static const _kRecentSearchesKey = 'chatbot_recent_searches_v1';
   static const _kConversationKey = 'chatbot_conversation_v1';
   static const _kConversationExpiresAtKey =
       'chatbot_conversation_expires_at_v1';
 
   // Recent routes in memory
   List<(String from, String to)> _recentRoutes = [];
+  List<String> _recentSearches = [];
+  int? _editingMessageIndex;
 
   // Initial greeting control
   bool _booted = false;
@@ -224,6 +227,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         })
         .whereType<(String, String)>()
         .toList();
+    _recentSearches = prefs.getStringList(_kRecentSearchesKey) ?? const [];
 
     final expiresAt = prefs.getInt(_kConversationExpiresAtKey);
     final now = DateTime.now();
@@ -443,12 +447,106 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     if (mounted) setState(() {});
   }
 
+  Future<void> _addRecentSearch(String search) async {
+    final value = search.trim();
+    if (value.isEmpty) return;
+    final prefs = await SharedPreferences.getInstance();
+    _recentSearches.removeWhere((item) => _norm(item) == _norm(value));
+    _recentSearches.insert(0, value);
+    if (_recentSearches.length > 5) {
+      _recentSearches = _recentSearches.sublist(0, 5);
+    }
+    await prefs.setStringList(_kRecentSearchesKey, _recentSearches);
+    if (mounted) setState(() {});
+  }
+
+  void _editUserMessage(int messageIndex) {
+    if (_busy ||
+        messageIndex < 0 ||
+        messageIndex >= _messages.length ||
+        !_messages[messageIndex].isMe) {
+      return;
+    }
+    final message = _messages[messageIndex];
+    setState(() => _editingMessageIndex = messageIndex);
+    _ctrl.text = message.lang == _Lang.ar ? message.textAr : message.textEn;
+    _ctrl.selection = TextSelection.fromPosition(
+      TextPosition(offset: _ctrl.text.length),
+    );
+    _inputFocus.requestFocus();
+  }
+
+  void _cancelMessageEdit() {
+    setState(() => _editingMessageIndex = null);
+    _ctrl.clear();
+    _persistDraft();
+  }
+
+  void _deleteUserTurn(int messageIndex) {
+    if (_busy ||
+        messageIndex < 0 ||
+        messageIndex >= _messages.length ||
+        !_messages[messageIndex].isMe) {
+      return;
+    }
+    setState(() {
+      _messages.removeRange(messageIndex, _messages.length);
+      _editingMessageIndex = null;
+    });
+    _persistConversation();
+  }
+
+  Future<void> _confirmClearChat() async {
+    final isArabic = _localeIsArabic;
+    final shouldClear = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(isArabic ? 'حذف محادثة اليوم؟' : 'Delete today\'s chat?'),
+        content: Text(isArabic
+            ? 'سيتم حذف جميع الرسائل والبحثات الأخيرة من هذا الجهاز.'
+            : 'All messages and recent searches will be removed from this device.'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: Text(isArabic ? 'إلغاء' : 'Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: Text(isArabic ? 'حذف' : 'Delete'),
+          ),
+        ],
+      ),
+    );
+    if (shouldClear != true) return;
+
+    final prefs = await SharedPreferences.getInstance();
+    await Future.wait([
+      prefs.remove(_kConversationKey),
+      prefs.remove(_kConversationExpiresAtKey),
+      prefs.remove(_kRecentSearchesKey),
+      prefs.remove(_kRecentRoutesKey),
+      prefs.remove(_kDraftKey),
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _messages.clear();
+      _recentSearches = [];
+      _recentRoutes = [];
+      _editingMessageIndex = null;
+      _ctrl.clear();
+    });
+    _addGreeting();
+    setState(() {});
+  }
+
   // -------------- Build --------------
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
     final t = Theme.of(context).textTheme;
     final timeSuggestions = _tripTimeSuggestions(_ctrl.text);
+    final showingRecentSearches =
+        _ctrl.text.trim().isEmpty && _recentSearches.isNotEmpty;
     final availableHeight = MediaQuery.sizeOf(context).height -
         MediaQuery.viewInsetsOf(context).bottom;
     final stationPickerHeight =
@@ -600,6 +698,33 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                           textStyle:
                               t.bodyMedium?.copyWith(color: cs.onSurface),
                         ),
+                        if (msg.isMe)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: _localeIsArabic ? 'تعديل' : 'Edit',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _editUserMessage(messageIndex),
+                                  icon:
+                                      const Icon(Icons.edit_outlined, size: 17),
+                                ),
+                                IconButton(
+                                  tooltip: _localeIsArabic ? 'حذف' : 'Delete',
+                                  visualDensity: VisualDensity.compact,
+                                  onPressed: _busy
+                                      ? null
+                                      : () => _deleteUserTurn(messageIndex),
+                                  icon: const Icon(Icons.delete_outline_rounded,
+                                      size: 17),
+                                ),
+                              ],
+                            ),
+                          ),
                         if (msg.estimate != null) ...[
                           const SizedBox(height: 8),
                           _TripAnalyticsCard(
@@ -650,9 +775,13 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                             size: 16, color: cs.primary),
                         const SizedBox(width: 6),
                         Text(
-                          _localeIsArabic
-                              ? 'اقتراحات ذكية'
-                              : 'Smart suggestions',
+                          showingRecentSearches
+                              ? (_localeIsArabic
+                                  ? 'عمليات البحث الأخيرة'
+                                  : 'Recent searches')
+                              : (_localeIsArabic
+                                  ? 'اقتراحات ذكية'
+                                  : 'Smart suggestions'),
                           style: t.labelLarge
                               ?.copyWith(fontWeight: FontWeight.w800),
                         ),
@@ -696,6 +825,40 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                   target: _stationSuggestionTarget!,
                   isArabic: _replyLang() == _Lang.ar,
                   onPick: _onPickSuggestion,
+                ),
+              ),
+            ),
+
+          if (_editingMessageIndex != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+              child: Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                decoration: BoxDecoration(
+                  color: cs.primaryContainer,
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.edit_note_rounded, color: cs.primary, size: 19),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        _localeIsArabic
+                            ? 'عدّل رسالتك ثم أرسل لتحديث الرد'
+                            : 'Edit your message, then send to update the reply',
+                        style: t.labelMedium?.copyWith(
+                          color: cs.onPrimaryContainer,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _cancelMessageEdit,
+                      child: Text(_localeIsArabic ? 'إلغاء' : 'Cancel'),
+                    ),
+                  ],
                 ),
               ),
             ),
@@ -855,14 +1018,24 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     if (text.isEmpty) return;
 
     _hideSuggestions();
-    _persistDraft(); // ensure saved
     _ctrl.clear();
+    _persistDraft();
+
+    final editingIndex = _editingMessageIndex;
+    if (editingIndex != null) {
+      setState(() {
+        _messages.removeRange(editingIndex, _messages.length);
+        _editingMessageIndex = null;
+      });
+      _persistConversation();
+    }
 
     // Detect user language per message
     final userLang = _containsArabic(text) ? _Lang.ar : _Lang.en;
     _lastUserLang = userLang;
 
     _addUserText(text, text, lang: userLang);
+    _addRecentSearch(text);
 
     if (_looksLikeNearest(text)) {
       _handleNearestStation();
@@ -870,6 +1043,10 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     }
 
     final timeRoute = _extractTripTimeRoute(text);
+    if (_isRouteComparisonIntent(text) && timeRoute != null) {
+      _handleRouteComparisonRequest(timeRoute.$1, timeRoute.$2);
+      return;
+    }
     if (_isTripTimeIntent(text) && timeRoute != null) {
       _handleTripTimeRequest(
         timeRoute.$1,
@@ -1121,8 +1298,25 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         query.contains('أطول');
   }
 
+  bool _isRouteComparisonIntent(String raw) {
+    final query = _norm(raw);
+    return query.contains('compare') ||
+        query.contains('fewest transfers') ||
+        query.contains('least walking') ||
+        query.contains('route options') ||
+        query.contains('compare routes') ||
+        query.contains('قارن') ||
+        query.contains('اقل تحويلات') ||
+        query.contains('أقل تحويلات') ||
+        query.contains('اقل مشي') ||
+        query.contains('أقل مشي');
+  }
+
   IconData _suggestionIcon(String suggestion) {
     final text = _norm(suggestion);
+    if (text.contains('compare') || text.contains('قارن')) {
+      return Icons.compare_arrows_rounded;
+    }
     if (text.contains('fastest') ||
         text.contains('quickest') ||
         text.contains('اسرع') ||
@@ -1185,6 +1379,15 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
                 onTap: () {
                   Navigator.pop(sheetContext);
                   _swapFromTo();
+                },
+              ),
+              _toolTile(
+                sheetContext,
+                icon: Icons.delete_outline_rounded,
+                label: isArabic ? 'حذف محادثة اليوم' : 'Delete today\'s chat',
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  _confirmClearChat();
                 },
               ),
             ],
@@ -1377,7 +1580,8 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
           toStation: toEn,
         );
         if (planned != null) {
-          final minutes = _minutes(planned.seconds);
+          final durationEn = _formatDuration(planned.seconds, _Lang.en);
+          final durationAr = _formatDuration(planned.seconds, _Lang.ar);
           final lines = planned.lines.isEmpty
               ? ''
               : ' Lines: ${planned.lines.join(', ')}.';
@@ -1389,8 +1593,8 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
           final transferTextAr =
               planned.transfers == 0 ? '' : ' التحويلات: ${planned.transfers}.';
           _addBotText(
-            'The current route-planning estimate is about $minutes min. It will be replaced by an anonymous community average once enough completed trips are recorded.$lines$transferText',
-            '. تقدير مخطط المسار الحالي هو حوالي $minutes دقيقة. سيُستبدل بمتوسط مجهول من رحلات المستخدمين عند توفر عدد كافٍ من الرحلات المكتملة.$linesAr$transferTextAr',
+            'The current route-planning estimate is about $durationEn. It will be replaced by an anonymous community average once enough completed trips are recorded.$lines$transferText',
+            '. تقدير مخطط المسار الحالي هو حوالي $durationAr. سيُستبدل بمتوسط مجهول من رحلات المستخدمين عند توفر عدد كافٍ من الرحلات المكتملة.$linesAr$transferTextAr',
             lang: _replyLang(),
           );
           return;
@@ -1403,9 +1607,12 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         return;
       }
 
-      final average = _minutes(estimate.averageSeconds);
-      final minimum = _minutes(estimate.minimumSeconds);
-      final maximum = _minutes(estimate.maximumSeconds);
+      final averageEn = _formatDuration(estimate.averageSeconds, _Lang.en);
+      final minimumEn = _formatDuration(estimate.minimumSeconds, _Lang.en);
+      final maximumEn = _formatDuration(estimate.maximumSeconds, _Lang.en);
+      final averageAr = _formatDuration(estimate.averageSeconds, _Lang.ar);
+      final minimumAr = _formatDuration(estimate.minimumSeconds, _Lang.ar);
+      final maximumAr = _formatDuration(estimate.maximumSeconds, _Lang.ar);
       final lines = estimate.commonLines.isEmpty
           ? ''
           : ' Common lines: ${estimate.commonLines.join(', ')}.';
@@ -1447,19 +1654,19 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
           : 'رحلاتك المسجلة';
       final responseEn = switch (statistic) {
         _TripStatistic.fastest =>
-          'The fastest recorded trip from $fromEn to $toEn is $minimum min.$fastestLines$limitedDataEn',
+          'The fastest recorded trip from $fromEn to $toEn is $minimumEn.$fastestLines$limitedDataEn',
         _TripStatistic.slowest =>
-          'The longest recorded trip from $fromEn to $toEn is $maximum min.$slowestLines$limitedDataEn',
+          'The longest recorded trip from $fromEn to $toEn is $maximumEn.$slowestLines$limitedDataEn',
         _TripStatistic.average =>
-          'From $fromEn to $toEn, the $averageSourceEn average is $average min across $samplePhraseEn. Typical range: $minimum-$maximum min.$lines$transferText$limitedDataEn',
+          'From $fromEn to $toEn, the $averageSourceEn average is $averageEn across $samplePhraseEn. Typical range: $minimumEn-$maximumEn.$lines$transferText$limitedDataEn',
       };
       final responseAr = switch (statistic) {
         _TripStatistic.fastest =>
-          'أسرع رحلة مسجلة من $fromAr إلى $toAr هي $minimum دقيقة.$fastestLinesAr$limitedDataAr',
+          'أسرع رحلة مسجلة من $fromAr إلى $toAr هي $minimumAr.$fastestLinesAr$limitedDataAr',
         _TripStatistic.slowest =>
-          'أطول رحلة مسجلة من $fromAr إلى $toAr هي $maximum دقيقة.$slowestLinesAr$limitedDataAr',
+          'أطول رحلة مسجلة من $fromAr إلى $toAr هي $maximumAr.$slowestLinesAr$limitedDataAr',
         _TripStatistic.average =>
-          'متوسط وقت الرحلة من $fromAr إلى $toAr في $sourceAr هو $average دقيقة عبر ${estimate.sampleCount} رحلة مكتملة. المدى المعتاد: $minimum-$maximum دقيقة.$linesAr$transferTextAr$limitedDataAr',
+          'متوسط وقت الرحلة من $fromAr إلى $toAr في $sourceAr هو $averageAr عبر ${estimate.sampleCount} رحلة مكتملة. المدى المعتاد: $minimumAr-$maximumAr.$linesAr$transferTextAr$limitedDataAr',
       };
       _addAnalyticsMessage(
         textEn: responseEn,
@@ -1493,7 +1700,88 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     }
   }
 
-  int _minutes(int seconds) => (seconds / 60).round();
+  String _formatDuration(int seconds, _Lang lang) {
+    final totalMinutes = math.max(0, (seconds / 60).round());
+    if (totalMinutes < 60) {
+      return lang == _Lang.ar ? '$totalMinutes د' : '$totalMinutes min';
+    }
+    final hours = totalMinutes ~/ 60;
+    final minutes = totalMinutes % 60;
+    if (minutes == 0) return lang == _Lang.ar ? '$hours س' : '$hours hr';
+    return lang == _Lang.ar ? '$hours س $minutes د' : '$hours hr $minutes min';
+  }
+
+  Future<void> _handleRouteComparisonRequest(
+    String fromTxt,
+    String toTxt,
+  ) async {
+    final from = _findStationByName(fromTxt);
+    final to = _findStationByName(toTxt);
+    if (from == null || to == null) {
+      _addBotText(
+        'I couldn’t match one of the stations. Try exact station names such as KAFD and STC.',
+        'تعذر مطابقة إحدى المحطتين. جرّب أسماء دقيقة مثل المركز المالي وSTC.',
+        lang: _replyLang(),
+      );
+      return;
+    }
+
+    final fromEn = from['name'].toString();
+    final toEn = to['name'].toString();
+    final fromAr = (from['nameAr'] ?? fromEn).toString();
+    final toAr = (to['nameAr'] ?? toEn).toString();
+    final comparison = _metroTripTime.compare(
+      fromStation: fromEn,
+      toStation: toEn,
+    );
+    if (comparison == null) {
+      _addBotText(
+        'I could not find a metro route to compare from $fromEn to $toEn.',
+        'تعذر العثور على مسار مترو للمقارنة من $fromAr إلى $toAr.',
+        lang: _replyLang(),
+      );
+      return;
+    }
+
+    await _addRecentRoute(fromEn, toEn);
+    _addBotAction(
+      textEn: 'Route comparison from $fromEn to $toEn:\n'
+          '${_comparisonLine(comparison.fastest, 'Fastest', _Lang.en)}\n'
+          '${_comparisonLine(comparison.fewestTransfers, 'Fewest transfers', _Lang.en)}\n'
+          '${_comparisonLine(comparison.leastWalking, 'Least walking', _Lang.en)}',
+      textAr: 'مقارنة المسارات من $fromAr إلى $toAr:\n'
+          '${_comparisonLine(comparison.fastest, 'الأسرع', _Lang.ar)}\n'
+          '${_comparisonLine(comparison.fewestTransfers, 'أقل تحويلات', _Lang.ar)}\n'
+          '${_comparisonLine(comparison.leastWalking, 'أقل مشي', _Lang.ar)}',
+      action: _MsgAction(
+        icon: Icons.map_rounded,
+        labelEn: 'Open fastest route on map',
+        labelAr: 'فتح أسرع مسار على الخريطة',
+        onTap: () {
+          final origin = LatLng(from['lat'] as double, from['lng'] as double);
+          final destination = LatLng(to['lat'] as double, to['lng'] as double);
+          AppBus.I.emit(RouteRequestEvent(from: origin, to: destination));
+          Navigator.of(context).popUntil((route) => route.isFirst);
+        },
+      ),
+      lang: _replyLang(),
+    );
+  }
+
+  String _comparisonLine(
+    MetroRouteTimeEstimate route,
+    String label,
+    _Lang lang,
+  ) {
+    final lines = route.lines.isEmpty ? '-' : route.lines.join(' + ');
+    if (lang == _Lang.ar) {
+      return '$label: ${_formatDuration(route.seconds, lang)} | '
+          '${route.transfers} تحويل | ${route.walkingMeters} م مشي | $lines';
+    }
+    return '$label: ${_formatDuration(route.seconds, lang)} | '
+        '${route.transfers} transfer${route.transfers == 1 ? '' : 's'} | '
+        '${route.walkingMeters} m walking | $lines';
+  }
 
   Future<void> _handleRouteRequest(String fromTxt, String toTxt) async {
     final sFrom = _findStationByName(fromTxt);
@@ -1773,17 +2061,22 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         normalized.contains('ابطي') ||
         normalized.contains('أبطأ');
     final isArabic = _replyLang() == _Lang.ar;
-    final catalog = isArabic
-        ? <String>[
-            'كم تستغرق الرحلة من المركز المالي إلى STC؟',
-            'ما أسرع رحلة من المركز المالي إلى STC؟',
-            'ما أطول رحلة من المركز المالي إلى STC؟',
-          ]
-        : <String>[
-            'How long does it take from KAFD to STC?',
-            'What is the fastest trip from KAFD to STC?',
-            'What is the longest trip from KAFD to STC?',
-          ];
+    final catalog = <String>[
+      ..._recentSearches,
+      ...(isArabic
+          ? <String>[
+              'كم تستغرق الرحلة من المركز المالي إلى STC؟',
+              'ما أسرع رحلة من المركز المالي إلى STC؟',
+              'ما أطول رحلة من المركز المالي إلى STC؟',
+              'قارن المسارات من المركز المالي إلى STC',
+            ]
+          : <String>[
+              'How long does it take from KAFD to STC?',
+              'What is the fastest trip from KAFD to STC?',
+              'What is the longest trip from KAFD to STC?',
+              'Compare routes from KAFD to STC',
+            ]),
+    ];
     for (final route in _recentRoutes) {
       catalog.add(isArabic
           ? 'كم تستغرق الرحلة من ${route.$1} إلى ${route.$2}؟'
@@ -2502,6 +2795,16 @@ class _TripAnalyticsCard extends StatelessWidget {
 
   int _minutes(int seconds) => (seconds / 60).round();
 
+  String _formatMinutes(int totalMinutes) {
+    if (totalMinutes < 60) {
+      return isArabic ? '$totalMinutes د' : '$totalMinutes min';
+    }
+    final hours = totalMinutes ~/ 60;
+    final minutes = totalMinutes % 60;
+    if (minutes == 0) return isArabic ? '$hours س' : '$hours hr';
+    return isArabic ? '$hours س $minutes د' : '$hours hr $minutes min';
+  }
+
   @override
   Widget build(BuildContext context) {
     final cs = Theme.of(context).colorScheme;
@@ -2590,7 +2893,7 @@ class _TripAnalyticsCard extends StatelessWidget {
                   ),
                   const Spacer(),
                   Text(
-                    '$focus ${isArabic ? 'دقيقة' : 'min'}',
+                    _formatMinutes(focus),
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           color: cs.onPrimary,
                           fontWeight: FontWeight.w900,
@@ -2653,7 +2956,7 @@ class _TripAnalyticsCard extends StatelessWidget {
         ),
         const SizedBox(height: 2),
         Text(
-          '$value ${isArabic ? 'د' : 'm'}',
+          _formatMinutes(value),
           style: Theme.of(context).textTheme.titleSmall?.copyWith(
                 fontWeight: FontWeight.w900,
               ),
