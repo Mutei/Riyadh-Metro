@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'dart:math';
 import 'dart:ui' as ui;
 
-import 'package:darb/extension/sized_box_extension.dart';
 import 'package:darb/screens/ticket_screen.dart';
 import 'package:flutter/foundation.dart'
     show defaultTargetPlatform, TargetPlatform;
@@ -4791,6 +4790,31 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                       activeDestination?.isNotEmpty == true
                           ? activeDestination!
                           : _lastDestLabel ?? '';
+                  final int totalMetroLegs = math.max(1, _metroSeq.length - 1);
+                  final int completedMetroLegs =
+                      _metroLeg.clamp(0, totalMetroLegs).toInt();
+                  final double metroProgress =
+                      completedMetroLegs / totalMetroLegs;
+                  final String nextStationLabel =
+                      _metroNextName?.trim().isNotEmpty == true
+                          ? _metroNextName!
+                          : _metroSeq.isNotEmpty
+                              ? _metroSeq.first.name
+                              : destinationLabel;
+                  final String currentLineLabel = _metroCurLineKey == null
+                      ? _tripText('Metro', 'المترو')
+                      : '${_cap(_metroCurLineKey!)} ${getTranslated(context, 'line')}';
+                  final Color panelPrimary = Color.lerp(
+                    bannerColor,
+                    const Color(0xFF061A13),
+                    .45,
+                  )!;
+                  final String transferGuidance = _transferToLineKey == null
+                      ? nextStationLabel
+                      : _tripText(
+                          'Change to ${_cap(_transferToLineKey!)} line at $nextStationLabel',
+                          'غيّر إلى الخط ${_cap(_transferToLineKey!)} في $nextStationLabel',
+                        );
 
                   // Small helper pill
                   Widget _pill(IconData icon, String text, {Color? fg}) =>
@@ -4798,7 +4822,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                         padding: const EdgeInsets.symmetric(
                             horizontal: 10, vertical: 6),
                         decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.12),
+                          color: Colors.white.withValues(alpha: .12),
                           borderRadius: BorderRadius.circular(10),
                         ),
                         child: Row(
@@ -4818,52 +4842,250 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                       );
 
                   return Container(
-                    margin: const EdgeInsets.only(top: 8),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 14, vertical: 10),
+                    margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                    padding: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
-                      color: const Color(0xFF1B5E20),
-                      borderRadius: BorderRadius.circular(18),
-                      boxShadow: const [
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          panelPrimary,
+                          Color.lerp(
+                              panelPrimary, const Color(0xFF061A13), .7)!,
+                        ],
+                      ),
+                      borderRadius: BorderRadius.circular(24),
+                      border: Border.all(
+                          color: Colors.white.withValues(alpha: .16)),
+                      boxShadow: [
                         BoxShadow(
-                            blurRadius: 8,
-                            color: Colors.black26,
-                            offset: Offset(0, 2))
+                          blurRadius: 18,
+                          color: panelPrimary.withValues(alpha: .42),
+                          offset: const Offset(0, 8),
+                        )
                       ],
                     ),
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Title
-                        Text(
-                          '${getTranslated(context, 'Destination to')} $destinationLabel',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontWeight: FontWeight.w700,
-                            fontSize: 18,
+                        Row(
+                          children: [
+                            Container(
+                              width: 38,
+                              height: 38,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: .16),
+                                borderRadius: BorderRadius.circular(13),
+                              ),
+                              child: const Icon(
+                                Icons.directions_subway_rounded,
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    _tripText(
+                                        'ACTIVE METRO TRIP', 'رحلة مترو نشطة'),
+                                    style: TextStyle(
+                                      color:
+                                          Colors.white.withValues(alpha: .74),
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                      letterSpacing: 1.05,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    '${getTranslated(context, 'Destination to')} $destinationLabel',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                      fontSize: 20,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                  horizontal: 10, vertical: 7),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withValues(alpha: .16),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.end,
+                                children: [
+                                  Text(
+                                    getTranslated(context, 'Arrival'),
+                                    style: TextStyle(
+                                      color:
+                                          Colors.white.withValues(alpha: .72),
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w700,
+                                    ),
+                                  ),
+                                  Text(
+                                    _fmtClock(etaT),
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontSize: 15,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 14),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: .16),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                                color: Colors.white.withValues(alpha: .12)),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                width: 34,
+                                height: 34,
+                                decoration: const BoxDecoration(
+                                  color: Colors.white,
+                                  shape: BoxShape.circle,
+                                ),
+                                child: Icon(
+                                  _transferAtNext
+                                      ? Icons.swap_horiz_rounded
+                                      : Icons.arrow_upward_rounded,
+                                  color: panelPrimary,
+                                  size: 20,
+                                ),
+                              ),
+                              const SizedBox(width: 10),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      _transferAtNext
+                                          ? getTranslated(
+                                              context, 'Change line here')
+                                          : getTranslated(
+                                              context, 'Next station'),
+                                      style: TextStyle(
+                                        color:
+                                            Colors.white.withValues(alpha: .72),
+                                        fontWeight: FontWeight.w700,
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      _transferAtNext
+                                          ? transferGuidance
+                                          : nextStationLabel,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: const TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.w800,
+                                        fontSize: 17,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              Text(
+                                '${_stopsLeftOnLine} ${getTranslated(context, 'stations')}',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        const SizedBox(height: 4),
-
-                        // Start / Arrival line
-                        Text(
-                          '${getTranslated(context, "Start")}: ${_fmtClock(startT)} • '
-                          '${getTranslated(context, "Arrival")}: ${_fmtClock(etaT)}',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 14,
+                        const SizedBox(height: 13),
+                        Row(
+                          children: [
+                            Text(
+                              _tripText('Journey progress', 'تقدم الرحلة'),
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: .78),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w700,
+                              ),
+                            ),
+                            const Spacer(),
+                            Text(
+                              '$completedMetroLegs/$totalMetroLegs',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 12,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 7),
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(99),
+                          child: LinearProgressIndicator(
+                            value: metroProgress,
+                            minHeight: 6,
+                            backgroundColor:
+                                Colors.black.withValues(alpha: .18),
+                            valueColor: const AlwaysStoppedAnimation<Color>(
+                                Colors.white),
                           ),
                         ),
-                        4.kH,
-                        Text(
-                          '${_fmtDist(_navRemainingMeters)} • ${_fmtSpeed(_navSpeedMps)}',
-                          style: const TextStyle(
-                            color: Colors.white70,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 14,
-                          ),
+                        const SizedBox(height: 11),
+                        Row(
+                          children: [
+                            Icon(Icons.schedule_rounded,
+                                color: Colors.white.withValues(alpha: .78),
+                                size: 16),
+                            const SizedBox(width: 5),
+                            Text(
+                              '${getTranslated(context, 'Start')}: ${_fmtClock(startT)}',
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: .82),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Icon(Icons.route_rounded,
+                                color: Colors.white.withValues(alpha: .78),
+                                size: 16),
+                            const SizedBox(width: 5),
+                            Expanded(
+                              child: Text(
+                                _tripText(
+                                  '${_fmtDist(_navRemainingMeters)} remaining',
+                                  '${_fmtDist(_navRemainingMeters)} متبقية',
+                                ),
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: .82),
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
 
                         // Current line & stops remaining pill
@@ -5108,7 +5330,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                   },
                                   child: _pill(
                                     Icons.directions_subway_filled,
-                                    ' ${_cap(_metroCurLineKey!)} ${getTranslated(context, "line")} • '
+                                    ' $currentLineLabel • '
                                     '$_stopsLeftOnLine ${getTranslated(context, "stations")}',
                                   ),
                                 )
