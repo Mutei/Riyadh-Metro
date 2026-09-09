@@ -2511,11 +2511,15 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         final fromName = _nearestStationName(e.from);
         final toName = _nearestStationName(e.to);
         if (fromName != null) _originCtrl.text = fromName;
-        if (toName != null) _destCtrl.text = toName;
+        if (toName != null) {
+          _destCtrl.text = toName;
+          _lastDestLabel = toName;
+        }
       } catch (_) {
         // Fallback placeholders if name lookup fails
         _originCtrl.text = 'Selected origin';
         _destCtrl.text = 'Selected destination';
+        _lastDestLabel = _destCtrl.text;
       }
 
       // Prefer metro; fall back to car if no metro route found
@@ -2596,7 +2600,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final fromName = _nearestStationName(e.from);
       final toName = _nearestStationName(e.to);
       if (fromName != null) _originCtrl.text = fromName;
-      if (toName != null) _destCtrl.text = toName;
+      if (toName != null) {
+        _destCtrl.text = toName;
+        _lastDestLabel = toName;
+      }
     } catch (_) {}
 
     // By default plan for metro first; fall back to drive if needed
@@ -4779,6 +4786,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
                   final DateTime etaT =
                       DateTime.now().add(Duration(seconds: etaSecs));
+                  final String? activeDestination = _tripDestLabel?.trim();
+                  final String destinationLabel =
+                      activeDestination?.isNotEmpty == true
+                          ? activeDestination!
+                          : _lastDestLabel ?? '';
 
                   // Small helper pill
                   Widget _pill(IconData icon, String text, {Color? fg}) =>
@@ -4825,7 +4837,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                       children: [
                         // Title
                         Text(
-                          '${getTranslated(context, 'Destination to')} ${_lastDestLabel ?? ''}',
+                          '${getTranslated(context, 'Destination to')} $destinationLabel',
                           style: const TextStyle(
                             color: Colors.white,
                             fontWeight: FontWeight.w700,
@@ -4869,35 +4881,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                   onTap: () async {
                                     if (_metroCurLineKey == null) return;
 
-                                    // 1) Get current location with a safe fallback
-                                    Position pos;
-                                    try {
-                                      pos = await Geolocator.getCurrentPosition(
-                                        desiredAccuracy: LocationAccuracy.high,
-                                      );
-                                    } catch (_) {
-                                      pos = await Geolocator
-                                              .getLastKnownPosition() ??
-                                          Position(
-                                            latitude: 24.7136,
-                                            longitude:
-                                                46.6753, // Riyadh center fallback
-                                            timestamp: DateTime.now(),
-                                            accuracy: 100.0,
-                                            altitude: 0.0,
-                                            altitudeAccuracy: 0.0,
-                                            heading: 0.0,
-                                            headingAccuracy: 0.0,
-                                            speed: 0.0,
-                                            speedAccuracy: 0.0,
-                                            isMocked: false,
-                                            floor: null,
-                                          );
-                                    }
-                                    final double myLat = pos.latitude;
-                                    final double myLng = pos.longitude;
-
-                                    // 2) Color mapper
+                                    // 1) Color mapper
                                     Color _colorFor(String key) {
                                       switch (key.toLowerCase()) {
                                         case 'blue':
@@ -4919,7 +4903,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                       }
                                     }
 
-                                    // 3) Choose station list for current line
+                                    // 2) Choose station list for current line
                                     final String rawKey = _metroCurLineKey!;
                                     final String keyLower =
                                         rawKey.toLowerCase();
@@ -4935,7 +4919,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     };
                                     if (rawStops.isEmpty) return;
 
-                                    // 4) Build a name->lines index (for transfer badges)
+                                    // 3) Build a name->lines index (for transfer badges)
                                     final Map<String, List<String>>
                                         nameToLines = {};
                                     void _index(String line,
@@ -4955,7 +4939,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     _index('Orange', metro.orangeStations);
                                     _index('Green', metro.greenStations);
 
-                                    // 5) Map to MetroStop and keep lat/lng
+                                    // 4) Map to MetroStop and keep lat/lng
                                     final enriched = rawStops.map((m) {
                                       final String nameEn = m['name'] as String;
                                       final transfers = List<String>.from(
@@ -4980,43 +4964,40 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     final List<MetroStop> stops =
                                         enriched.map((e) => e.stop).toList();
 
-                                    // 6) Helpers
-                                    double _deg(double v) =>
-                                        v * (math.pi / 180.0);
-                                    double _haversine(double lat1, double lon1,
-                                        double lat2, double lon2) {
-                                      const R = 6371000.0;
-                                      final dLat = _deg(lat2 - lat1);
-                                      final dLon = _deg(lon2 - lon1);
-                                      final a = math.sin(dLat / 2) *
-                                              math.sin(dLat / 2) +
-                                          math.cos(_deg(lat1)) *
-                                              math.cos(_deg(lat2)) *
-                                              math.sin(dLon / 2) *
-                                              math.sin(dLon / 2);
-                                      final c = 2 *
-                                          math.atan2(
-                                              math.sqrt(a), math.sqrt(1 - a));
-                                      return R * c;
-                                    }
+                                    // 6) Use the active route sequence as the source of truth.
+                                    // A fresh GPS fix can be stale underground and previously made the
+                                    // onboard sheet point to the wrong terminal after a station change.
+                                    final int activeLeg = _metroSeq.isEmpty
+                                        ? 0
+                                        : _metroLeg
+                                            .clamp(0, _metroSeq.length - 1)
+                                            .toInt();
+                                    final StationNode? activeStation =
+                                        _metroSeq.isEmpty
+                                            ? null
+                                            : _metroSeq[activeLeg];
+                                    final StationNode? nextRouteStation =
+                                        activeLeg + 1 < _metroSeq.length
+                                            ? _metroSeq[activeLeg + 1]
+                                            : null;
 
-                                    // 7) Nearest station to YOU (currentIdx)
-                                    int currentIdx = 0;
-                                    double best = double.infinity;
-                                    for (int i = 0; i < enriched.length; i++) {
-                                      final d = _haversine(myLat, myLng,
-                                          enriched[i].lat, enriched[i].lng);
-                                      if (d < best) {
-                                        best = d;
-                                        currentIdx = i;
-                                      }
-                                    }
+                                    int currentIdx = activeStation == null
+                                        ? -1
+                                        : enriched.indexWhere((e) =>
+                                            e.stop.nameEn.toLowerCase() ==
+                                            activeStation.name.toLowerCase());
+                                    final int nextRouteIdx = nextRouteStation
+                                                ?.lineKey
+                                                .toLowerCase() ==
+                                            keyLower
+                                        ? enriched.indexWhere((e) =>
+                                            e.stop.nameEn.toLowerCase() ==
+                                            nextRouteStation!.name
+                                                .toLowerCase())
+                                        : -1;
 
-                                    // 8) Direction derived from the banner’s NEXT STATION when available.
-                                    //    This guarantees correct “current → next” flow (e.g., Wurud → STC).
-                                    bool forward;
-
-                                    // Prefer banner-provided next station name (from the green banner logic)
+                                    // The banner is a fallback only; its value is also derived
+                                    // from the active route rather than an independent location read.
                                     int nextByBannerIdx = -1;
                                     final String? nextName = _metroNextName;
                                     if (nextName != null &&
@@ -5031,75 +5012,71 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                                   want);
                                     }
 
-                                    if (nextByBannerIdx != -1) {
-                                      // If banner says the next station is STC, and we’re at Wurud (index smaller),
-                                      // forward becomes true (move right in the list).
+                                    if (currentIdx == -1 &&
+                                        nextByBannerIdx != -1) {
+                                      currentIdx = (nextByBannerIdx - 1)
+                                          .clamp(0, stops.length - 1)
+                                          .toInt();
+                                    }
+                                    if (currentIdx == -1) currentIdx = 0;
+
+                                    bool forward;
+                                    if (nextRouteIdx != -1 &&
+                                        nextRouteIdx != currentIdx) {
+                                      forward = nextRouteIdx > currentIdx;
+                                    } else if (nextByBannerIdx != -1 &&
+                                        nextByBannerIdx != currentIdx) {
                                       forward = nextByBannerIdx > currentIdx;
                                     } else {
-                                      // Fallbacks when banner next isn't available
-                                      final LatLng? _destLL = _tripDestLL ??
+                                      final LatLng? destination = _tripDestLL ??
                                           _navDestination ??
                                           _userDestination;
-                                      final double? destLat = _destLL?.latitude;
-                                      final double? destLng =
-                                          _destLL?.longitude;
-
-                                      if (destLat != null && destLng != null) {
-                                        int destIdx = 0;
-                                        double bestDest = double.infinity;
-                                        for (int i = 0;
-                                            i < enriched.length;
-                                            i++) {
-                                          final d = _haversine(destLat, destLng,
-                                              enriched[i].lat, enriched[i].lng);
-                                          if (d < bestDest) {
-                                            bestDest = d;
-                                            destIdx = i;
-                                          }
-                                        }
-                                        forward = destIdx > currentIdx;
-                                        if (destIdx == currentIdx) {
-                                          final dToFirst = _haversine(
-                                              enriched[currentIdx].lat,
-                                              enriched[currentIdx].lng,
-                                              enriched.first.lat,
-                                              enriched.first.lng);
-                                          final dToLast = _haversine(
-                                              enriched[currentIdx].lat,
-                                              enriched[currentIdx].lng,
-                                              enriched.last.lat,
-                                              enriched.last.lng);
-                                          forward = dToLast < dToFirst;
-                                        }
+                                      if (destination != null) {
+                                        final int destinationIdx =
+                                            enriched.indexWhere((e) =>
+                                                e.stop.nameEn.toLowerCase() ==
+                                                _nearestStationName(destination)
+                                                    ?.toLowerCase());
+                                        forward = destinationIdx == -1
+                                            ? true
+                                            : destinationIdx > currentIdx;
                                       } else {
-                                        // Last resort: neighbor-distance heuristic
-                                        final prevIdx = (currentIdx - 1)
-                                            .clamp(0, stops.length - 1);
-                                        final nextIdx = (currentIdx + 1)
-                                            .clamp(0, stops.length - 1);
-                                        final dPrev = _haversine(
-                                            myLat,
-                                            myLng,
-                                            enriched[prevIdx].lat,
-                                            enriched[prevIdx].lng);
-                                        final dNext = _haversine(
-                                            myLat,
-                                            myLng,
-                                            enriched[nextIdx].lat,
-                                            enriched[nextIdx].lng);
-                                        forward = dNext <= dPrev;
+                                        forward = true;
                                       }
                                     }
 
-                                    // 9) Header (terminal) + visuals
+                                    // The direction label describes this journey's segment on the
+                                    // current line, not the terminal of the full metro line.
+                                    int routeTargetIdx = -1;
+                                    for (int i = activeLeg + 1;
+                                        i < _metroSeq.length;
+                                        i++) {
+                                      final station = _metroSeq[i];
+                                      if (station.lineKey.toLowerCase() !=
+                                          keyLower) {
+                                        break;
+                                      }
+                                      final candidate = enriched.indexWhere(
+                                          (e) =>
+                                              e.stop.nameEn.toLowerCase() ==
+                                              station.name.toLowerCase());
+                                      if (candidate != -1) {
+                                        routeTargetIdx = candidate;
+                                      }
+                                    }
+
+                                    final MetroStop directionStop =
+                                        routeTargetIdx == -1
+                                            ? (forward
+                                                ? stops.last
+                                                : stops.first)
+                                            : stops[routeTargetIdx];
                                     final String lineKey = _cap(rawKey);
                                     final Color lineColor = _colorFor(rawKey);
-                                    final String dirEn = forward
-                                        ? 'To ${stops.last.nameEn}'
-                                        : 'To ${stops.first.nameEn}';
-                                    final String dirAr = forward
-                                        ? 'إلى ${stops.last.nameAr}'
-                                        : 'إلى ${stops.first.nameAr}';
+                                    final String dirEn =
+                                        'To ${directionStop.nameEn}';
+                                    final String dirAr =
+                                        'إلى ${directionStop.nameAr}';
 
                                     await showOnboardDisplay(
                                       context,
