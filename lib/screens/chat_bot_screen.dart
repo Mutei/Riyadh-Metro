@@ -1552,7 +1552,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     final to = toMatches.first;
     setState(() => _busy = true);
     try {
-      final estimate = await _tripAnalytics.estimateMetroTrip(
+      final lookup = await _tripAnalytics.estimateMetroTripWithReverseFallback(
         fromStation: from['name'].toString(),
         toStation: to['name'].toString(),
       );
@@ -1560,6 +1560,7 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       final toEn = to['name'].toString();
       final fromAr = (from['nameAr'] ?? fromEn).toString();
       final toAr = (to['nameAr'] ?? toEn).toString();
+      final estimate = lookup?.estimate;
       if (estimate == null) {
         if (statistic != _TripStatistic.average) {
           final metric = statistic == _TripStatistic.fastest
@@ -1652,30 +1653,41 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       final sourceAr = estimate.isCommunityAggregate
           ? 'رحلات المستخدمين المسجلة بتوقيتات المحطات'
           : 'رحلاتك المسجلة';
+      final usedReverseRoute = lookup!.usedReverseRoute;
+      final recordedFromEn = usedReverseRoute ? toEn : fromEn;
+      final recordedToEn = usedReverseRoute ? fromEn : toEn;
+      final recordedFromAr = usedReverseRoute ? toAr : fromAr;
+      final recordedToAr = usedReverseRoute ? fromAr : toAr;
+      final reversePrefixEn = usedReverseRoute
+          ? 'No completed trips were found from $fromEn to $toEn. Using recorded trips in the reverse direction, $recordedFromEn to $recordedToEn; travel time can differ by direction. '
+          : '';
+      final reversePrefixAr = usedReverseRoute
+          ? 'لم يتم العثور على رحلات مكتملة من $fromAr إلى $toAr. نستخدم الرحلات المسجلة في الاتجاه العكسي من $recordedFromAr إلى $recordedToAr؛ وقد يختلف وقت الرحلة حسب الاتجاه. '
+          : '';
       final responseEn = switch (statistic) {
         _TripStatistic.fastest =>
-          'The fastest recorded trip from $fromEn to $toEn is $minimumEn.$fastestLines$limitedDataEn',
+          '${reversePrefixEn}The fastest recorded trip from $recordedFromEn to $recordedToEn is $minimumEn.$fastestLines$limitedDataEn',
         _TripStatistic.slowest =>
-          'The longest recorded trip from $fromEn to $toEn is $maximumEn.$slowestLines$limitedDataEn',
+          '${reversePrefixEn}The longest recorded trip from $recordedFromEn to $recordedToEn is $maximumEn.$slowestLines$limitedDataEn',
         _TripStatistic.average =>
-          'From $fromEn to $toEn, the $averageSourceEn average is $averageEn across $samplePhraseEn. Typical range: $minimumEn-$maximumEn.$lines$transferText$limitedDataEn',
+          '${reversePrefixEn}From $recordedFromEn to $recordedToEn, the $averageSourceEn average is $averageEn across $samplePhraseEn. Typical range: $minimumEn-$maximumEn.$lines$transferText$limitedDataEn',
       };
       final responseAr = switch (statistic) {
         _TripStatistic.fastest =>
-          'أسرع رحلة مسجلة من $fromAr إلى $toAr هي $minimumAr.$fastestLinesAr$limitedDataAr',
+          '${reversePrefixAr}أسرع رحلة مسجلة من $recordedFromAr إلى $recordedToAr هي $minimumAr.$fastestLinesAr$limitedDataAr',
         _TripStatistic.slowest =>
-          'أطول رحلة مسجلة من $fromAr إلى $toAr هي $maximumAr.$slowestLinesAr$limitedDataAr',
+          '${reversePrefixAr}أطول رحلة مسجلة من $recordedFromAr إلى $recordedToAr هي $maximumAr.$slowestLinesAr$limitedDataAr',
         _TripStatistic.average =>
-          'متوسط وقت الرحلة من $fromAr إلى $toAr في $sourceAr هو $averageAr عبر ${estimate.sampleCount} رحلة مكتملة. المدى المعتاد: $minimumAr-$maximumAr.$linesAr$transferTextAr$limitedDataAr',
+          '${reversePrefixAr}متوسط وقت الرحلة من $recordedFromAr إلى $recordedToAr في $sourceAr هو $averageAr عبر ${estimate.sampleCount} رحلة مكتملة. المدى المعتاد: $minimumAr-$maximumAr.$linesAr$transferTextAr$limitedDataAr',
       };
       _addAnalyticsMessage(
         textEn: responseEn,
         textAr: responseAr,
         estimate: estimate,
-        fromEn: fromEn,
-        toEn: toEn,
-        fromAr: fromAr,
-        toAr: toAr,
+        fromEn: recordedFromEn,
+        toEn: recordedToEn,
+        fromAr: recordedFromAr,
+        toAr: recordedToAr,
         statistic: statistic,
         lang: _replyLang(),
       );

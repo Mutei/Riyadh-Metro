@@ -62,14 +62,14 @@ const List<Map<String, dynamic>> redStations = [
   {
     'name': 'Riyadh Exhibition Center',
     'nameAr': 'مركز الرياض للمعارض',
-    'lat': 24.767520506813426,
-    'lng': 46.75865705577289
+    'lat': 24.754520706460326,
+    'lng': 46.727107489510345
   },
   {
     'name': 'Khalid Ibn Waleed',
     'nameAr': 'طريق خالد بن الوليد',
-    'lat': 24.754520706460326,
-    'lng': 46.727107489510345
+    'lat': 24.767520506813426,
+    'lng': 46.75865705577289
   },
   {
     'name': 'Hamra',

@@ -16,6 +16,33 @@ class TripAnalyticsService {
     required String fromStation,
     required String toStation,
   }) async {
+    final trips = await _completedTripRecords();
+    if (trips == null) return null;
+
+    return estimateFromRecordedTrips(
+      trips: trips,
+      fromStation: fromStation,
+      toStation: toStation,
+    );
+  }
+
+  /// Looks up the requested direction first, then uses the inverse route only
+  /// when no completed trip has recorded the requested station order.
+  Future<TripTimeLookup?> estimateMetroTripWithReverseFallback({
+    required String fromStation,
+    required String toStation,
+  }) async {
+    final trips = await _completedTripRecords();
+    if (trips == null) return null;
+
+    return estimateWithReverseFallback(
+      trips: trips,
+      fromStation: fromStation,
+      toStation: toStation,
+    );
+  }
+
+  Future<List<Map<Object?, Object?>>?> _completedTripRecords() async {
     dynamic raw;
     try {
       raw = (await _database.ref('App/TravelHistory').get()).value;
@@ -32,11 +59,7 @@ class TripAnalyticsService {
       }
     }
 
-    return estimateFromRecordedTrips(
-      trips: trips,
-      fromStation: fromStation,
-      toStation: toStation,
-    );
+    return trips;
   }
 
   /// Pure calculation entry point for regression tests. Every map has the same
@@ -65,6 +88,43 @@ class TripAnalyticsService {
       if (sample != null) samples.add(sample);
     }
     return samples.isEmpty ? null : _estimateFromSamples(samples);
+  }
+
+  /// Pure fallback lookup used by the chatbot and tests. A direct observation
+  /// is always preferred, even if inverse observations are also available.
+  static TripTimeLookup? estimateWithReverseFallback({
+    required Iterable<Map<Object?, Object?>> trips,
+    required String fromStation,
+    required String toStation,
+  }) {
+    final records = trips.toList(growable: false);
+    final direct = estimateFromRecordedTrips(
+      trips: records,
+      fromStation: fromStation,
+      toStation: toStation,
+    );
+    if (direct != null) {
+      return TripTimeLookup(
+        estimate: direct,
+        usedReverseRoute: false,
+        recordedFromStation: fromStation,
+        recordedToStation: toStation,
+      );
+    }
+
+    final reverse = estimateFromRecordedTrips(
+      trips: records,
+      fromStation: toStation,
+      toStation: fromStation,
+    );
+    if (reverse == null) return null;
+
+    return TripTimeLookup(
+      estimate: reverse,
+      usedReverseRoute: true,
+      recordedFromStation: toStation,
+      recordedToStation: fromStation,
+    );
   }
 
   static bool _isCompletedMetroTrip(Map<Object?, Object?> trip) {
@@ -266,6 +326,22 @@ class TripTimeEstimate {
     required this.slowestLines,
     required this.averageTransfers,
     required this.isCommunityAggregate,
+  });
+}
+
+/// Identifies whether a historical result came from the requested route or the
+/// reverse direction. Consumers must present reverse observations as such.
+class TripTimeLookup {
+  final TripTimeEstimate estimate;
+  final bool usedReverseRoute;
+  final String recordedFromStation;
+  final String recordedToStation;
+
+  const TripTimeLookup({
+    required this.estimate,
+    required this.usedReverseRoute,
+    required this.recordedFromStation,
+    required this.recordedToStation,
   });
 }
 

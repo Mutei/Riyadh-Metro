@@ -635,6 +635,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   String? _tripDestLabel;
   LatLng? _tripOriginLL;
   LatLng? _tripDestLL;
+  DateTime? _lastOngoingTripNotificationAt;
+  String? _lastOngoingTripNotificationContent;
 
   String _tripText(String english, String arabic) {
     return Localizations.localeOf(context).languageCode == 'ar'
@@ -680,6 +682,77 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       body: body,
       priority: priority,
       accentColor: lineColor,
+    ));
+  }
+
+  /// Keeps one quiet Android notification current for the active trip.
+  /// The existing navigation session remains the only source of location and
+  /// station progress; this method only presents that state in the system UI.
+  void _updateOngoingTripNotification({bool force = false}) {
+    if (!_navigating) return;
+
+    final now = DateTime.now();
+    final eta = TimeOfDay.fromDateTime(
+      now.add(Duration(seconds: (_etaSecondsForUI() as num).round())),
+    ).format(context);
+    final String title = _tripText('Trip in progress', 'الرحلة قيد التقدم');
+    final String body;
+    Color? lineColor;
+    int? progress;
+
+    if (_firstMileToStation && _firstStationName != null) {
+      final line =
+          _firstStationLineKey == null ? '' : ' ${_cap(_firstStationLineKey!)}';
+      body = _tripText(
+        'Head to $_firstStationName to board the${line.isEmpty ? '' : line} Line. ETA $eta.',
+        'اتجه إلى $_firstStationName للصعود إلى${line.isEmpty ? '' : ' الخط$line'}. الوصول المتوقع $eta.',
+      );
+      lineColor = _firstStationLineKey == null
+          ? null
+          : metroLineColors[_firstStationLineKey!];
+    } else if (_tripMode == _TripMode.metro && _metroSeq.length >= 2) {
+      final currentLeg = _metroLeg.clamp(0, _metroSeq.length - 1).toInt();
+      final next = _metroSeq[math.min(currentLeg + 1, _metroSeq.length - 1)];
+      final remainingStops = math.max(0, _metroSeq.length - 1 - currentLeg);
+      final currentLine = _metroSeq[currentLeg].lineKey;
+      final transferLine = _transferAtNext ? _transferToLineKey : null;
+      final instruction = transferLine == null
+          ? _tripText('Next: ${next.name}', 'التالي: ${next.name}')
+          : _tripText(
+              'Transfer at ${next.name} to ${_cap(transferLine)} Line',
+              'تحويل في ${next.name} إلى الخط ${_cap(transferLine)}',
+            );
+      body = _tripText(
+        '$instruction · $remainingStops stations remaining · ETA $eta',
+        '$instruction · متبقي $remainingStops محطات · الوصول المتوقع $eta',
+      );
+      lineColor = metroLineColors[currentLine];
+      progress = ((currentLeg / (_metroSeq.length - 1)) * 100).round();
+    } else {
+      final instruction =
+          _navNow ?? _tripText('Navigation is active', 'الملاحة نشطة');
+      body = _tripText(
+        '$instruction · ETA $eta',
+        '$instruction · الوصول المتوقع $eta',
+      );
+    }
+
+    final contentKey = '$title|$body|${progress ?? -1}';
+    final lastUpdate = _lastOngoingTripNotificationAt;
+    if (!force &&
+        contentKey == _lastOngoingTripNotificationContent &&
+        lastUpdate != null &&
+        now.difference(lastUpdate) < const Duration(seconds: 30)) {
+      return;
+    }
+
+    _lastOngoingTripNotificationContent = contentKey;
+    _lastOngoingTripNotificationAt = now;
+    unawaited(AppLocalNotifications.showOngoingTripStatus(
+      title: title,
+      body: body,
+      accentColor: lineColor,
+      progress: progress,
     ));
   }
 
@@ -1149,6 +1222,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _transferPrepareShown.clear();
     _tripAlertEventsSent.clear();
     await AppLocalNotifications.clearTripEvents();
+    await AppLocalNotifications.clearOngoingTripStatus();
+    _lastOngoingTripNotificationAt = null;
+    _lastOngoingTripNotificationContent = null;
 
     _tripDestLabel =
         _destCtrl.text.isNotEmpty ? _destCtrl.text : _tripDestLabel;
@@ -1339,6 +1415,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
 
     await _bgNav.start(dest: _navDestination!);
+    _updateOngoingTripNotification(force: true);
     if (_tripMode == _TripMode.metro && _metroSeq.length >= 2) {
       final stops = _metroSeq.length - 1;
       final transfers = _lastChosenRoute?.transfers ?? 0;
@@ -2055,6 +2132,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         return;
       }
 
+      _updateOngoingTripNotification();
       if (mounted) setState(() {});
     });
   }
@@ -2104,6 +2182,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     // Keep only the completion summary; all earlier prompts belong to the
     // completed journey and should no longer be actionable.
     await AppLocalNotifications.clearTripEvents();
+    await AppLocalNotifications.clearOngoingTripStatus();
+    _lastOngoingTripNotificationAt = null;
+    _lastOngoingTripNotificationContent = null;
     if (startedAt != null) {
       final duration = DateTime.now().difference(startedAt);
       final minutes = math.max(1, duration.inMinutes);

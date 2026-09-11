@@ -71,6 +71,7 @@ class AppLocalNotifications {
       FlutterLocalNotificationsPlugin();
   static bool _inited = false;
   static final Set<int> _activeTripNotificationIds = <int>{};
+  static const int _ongoingTripStatusNotificationId = 900001;
 
   static Future<void> init() async {
     if (_inited) return;
@@ -182,6 +183,57 @@ class AppLocalNotifications {
       body,
       NotificationDetails(android: android, iOS: ios),
     );
+  }
+
+  /// Replaces one non-dismissible status notification while a trip is active.
+  /// This is deliberately separate from event alerts so it remains visible in
+  /// Android's notification shade without creating a notification per update.
+  static Future<void> showOngoingTripStatus({
+    required String title,
+    required String body,
+    Color? accentColor,
+    int? progress,
+  }) async {
+    await init();
+    final normalizedProgress = progress?.clamp(0, 100).toInt();
+    final android = AndroidNotificationDetails(
+      'trip_progress',
+      'Trip progress',
+      channelDescription: 'Active metro navigation status',
+      importance: Importance.defaultImportance,
+      priority: Priority.defaultPriority,
+      category: AndroidNotificationCategory.navigation,
+      ongoing: true,
+      autoCancel: false,
+      onlyAlertOnce: true,
+      playSound: false,
+      enableVibration: false,
+      color: accentColor,
+      showProgress: normalizedProgress != null,
+      maxProgress: 100,
+      progress: normalizedProgress ?? 0,
+      styleInformation: BigTextStyleInformation(
+        body,
+        contentTitle: title,
+        summaryText: 'Darb active trip',
+      ),
+    );
+    const ios = DarwinNotificationDetails(
+      presentAlert: true,
+      presentSound: false,
+      presentBadge: false,
+    );
+    await _plugin.show(
+      _ongoingTripStatusNotificationId,
+      title,
+      body,
+      NotificationDetails(android: android, iOS: ios),
+    );
+  }
+
+  static Future<void> clearOngoingTripStatus() async {
+    await init();
+    await _plugin.cancel(_ongoingTripStatusNotificationId);
   }
 
   static Future<void> clearTripEvents() async {

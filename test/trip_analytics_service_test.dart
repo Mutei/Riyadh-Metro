@@ -101,6 +101,50 @@ void main() {
     expect(reverse, isNull);
   });
 
+  test('uses reverse records only when the requested direction has none', () {
+    final reverseOnly = _completedTrip(<Object?, Object?>{
+      'a': _segment(
+        from: 'National Museum',
+        to: 'Ministry of Education',
+        line: 'green',
+        startedAt: 1000,
+        finishedAt: 7000,
+      ),
+    });
+    final direct = _completedTrip(<Object?, Object?>{
+      'a': _segment(
+        from: 'Ministry of Education',
+        to: 'National Museum',
+        line: 'blue',
+        startedAt: 1000,
+        finishedAt: 5000,
+      ),
+    });
+
+    final fallback = TripAnalyticsService.estimateWithReverseFallback(
+      trips: [reverseOnly],
+      fromStation: 'Ministry of Education',
+      toStation: 'National Museum',
+    );
+    final preferredDirect = TripAnalyticsService.estimateWithReverseFallback(
+      trips: [reverseOnly, direct],
+      fromStation: 'Ministry of Education',
+      toStation: 'National Museum',
+    );
+
+    expect(fallback, isNotNull);
+    expect(fallback!.usedReverseRoute, isTrue);
+    expect(fallback.recordedFromStation, 'National Museum');
+    expect(fallback.recordedToStation, 'Ministry of Education');
+    expect(fallback.estimate.averageSeconds, 6);
+
+    expect(preferredDirect, isNotNull);
+    expect(preferredDirect!.usedReverseRoute, isFalse);
+    expect(preferredDirect.recordedFromStation, 'Ministry of Education');
+    expect(preferredDirect.recordedToStation, 'National Museum');
+    expect(preferredDirect.estimate.averageSeconds, 4);
+  });
+
   test('rejects incomplete trips and segments without both timestamps', () {
     final incompleteTrip = <Object?, Object?>{
       'mode': 'metro',
