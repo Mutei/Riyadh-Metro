@@ -356,6 +356,13 @@
     "Mode": "Mode",
     "Search": "Search",
     "Stops": "Stops",
+    "Add stop": "Add another stop",
+    "Choose a destination before adding a stop.": "Choose a destination before adding a stop.",
+    "Move up": "Move up",
+    "Move down": "Move down",
+    "Remove": "Remove",
+    "Choose your route": "Choose your route",
+    "Show more routes": "Show more routes",
     "Exchanges": "Exchanges",
     "Estimated metro travel time": "Estimated metro travel time",
     "Exchange penalty": "Exchange penalty",
@@ -474,6 +481,9 @@
     "trip.pdf.export": "Export PDF",
     "trip.pdf.generating": "Generating report...",
     "trip.pdf.ready": "Trip report is ready to save or share.",
-    "trip.pdf.failed": "Could not generate the trip report. Please try again."
+    "trip.pdf.failed": "Could not generate the trip report. Please try again.",
+    "Recorded average": "Recorded average",
+    "completed trips": "completed trips",
+    "Route via": "Via"
 
 }

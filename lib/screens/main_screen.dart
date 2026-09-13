@@ -51,6 +51,7 @@ import 'favorites_screen.dart';
 
 // NEW: travel history writes
 import '../services/travel_history_service.dart';
+import '../services/trip_analytics_service.dart';
 import '../services/nav_session.dart';
 import 'line_segment_picker_screen.dart';
 
@@ -96,6 +97,13 @@ enum _TripMode { metro, drive }
 enum NavHintType { walk, board, transfer, alight, prepare }
 
 enum _TripAlertKind { progress, transfer, destination, completed }
+
+class _RouteStop {
+  final LatLng location;
+  final String label;
+
+  const _RouteStop({required this.location, required this.label});
+}
 
 class MainScreen extends StatefulWidget {
   final String firstName;
@@ -566,6 +574,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   // User origin/destination
   LatLng? _userOrigin;
   LatLng? _userDestination;
+  final List<_RouteStop> _intermediateStops = [];
+  final List<_RouteStop> _activeTripStops = [];
+  int _activeTripStopIndex = 0;
+  _TripMode _activeTripMode = _TripMode.metro;
+  bool _updatingStops = false;
   LatLng _lastCameraTarget = _riyadh;
   final NavSession _bgNav = NavSession.instance;
   StreamSubscription<NavUpdate>? _uiNavSub;
@@ -627,6 +640,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   // ======= Travel history session state =======
   final _travelSvc = TravelHistoryService();
+  final _tripAnalytics = TripAnalyticsService();
+  Map<RouteOption, TripTimeEstimate> _routeHistoryByOption = {};
+  int? _selectedRouteHistoricalSeconds;
+  DateTime? _selectedRouteEtaStartedAt;
   String? _activeTripId; // push key in DB
   DateTime? _tripStartAt;
   int _tripDistance = 0; // meters accumulated
@@ -1183,6 +1200,66 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     });
   }
 
+  _RouteStop? get _planningStop {
+    if (_intermediateStops.isNotEmpty) return _intermediateStops.first;
+    final destination = _userDestination;
+    if (destination == null) return null;
+    return _RouteStop(
+      location: destination,
+      label: _lastDestLabel ?? _destCtrl.text.trim(),
+    );
+  }
+
+  _RouteStop? get _activeTripStop {
+    if (_activeTripStopIndex < 0 ||
+        _activeTripStopIndex >= _activeTripStops.length) {
+      return null;
+    }
+    return _activeTripStops[_activeTripStopIndex];
+  }
+
+  LatLng? get _activeStopDestination => _activeTripStop?.location;
+
+  Future<void> _addCurrentDestinationAsStop() async {
+    final destination = _userDestination;
+    final label = (_lastDestLabel ?? _destCtrl.text).trim();
+    if (destination == null || label.isEmpty) {
+      _notify(
+          getTranslated(context, 'Choose a destination before adding a stop.'));
+      return;
+    }
+
+    _updatingStops = true;
+    _destCtrl.clear();
+    _updatingStops = false;
+    _clearRouteOverlays();
+    _clearDestinationMarker();
+    if (!mounted) return;
+    setState(() {
+      _intermediateStops.add(_RouteStop(location: destination, label: label));
+      _userDestination = null;
+      _lastDestLabel = null;
+      _lastChosenRoute = null;
+      _lastRouteOptions = null;
+    });
+  }
+
+  Future<void> _removeIntermediateStop(int index) async {
+    if (index < 0 || index >= _intermediateStops.length) return;
+    setState(() => _intermediateStops.removeAt(index));
+    if (_userDestination != null) await _tryRouteIfBothReady();
+  }
+
+  Future<void> _moveIntermediateStop(int index, int direction) async {
+    final target = index + direction;
+    if (index < 0 || target < 0 || target >= _intermediateStops.length) return;
+    setState(() {
+      final stop = _intermediateStops.removeAt(index);
+      _intermediateStops.insert(target, stop);
+    });
+    if (_userDestination != null) await _tryRouteIfBothReady();
+  }
+
   Future<void> _rerouteFrom(LatLng here) async {
     if (_navDestination == null) return;
     await _renderDrivingRoute(here, _navDestination!);
@@ -1229,6 +1306,15 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _tripDestLabel =
         _destCtrl.text.isNotEmpty ? _destCtrl.text : _tripDestLabel;
     _tripDestLL = _userDestination;
+    _activeTripStops
+      ..clear()
+      ..addAll(_intermediateStops)
+      ..add(_RouteStop(
+        location: _userDestination!,
+        label: _tripDestLabel ?? _destCtrl.text.trim(),
+      ));
+    _activeTripStopIndex = 0;
+    _activeTripMode = _tripMode;
     _tripOriginLabel =
         _originCtrl.text.isNotEmpty ? _originCtrl.text : _tripOriginLabel;
     _tripOriginLL = _userOrigin ??
@@ -1239,6 +1325,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     final modeStr = (_tripMode == _TripMode.metro) ? 'metro' : 'car';
     _tripStartAt = DateTime.now();
+    _selectedRouteEtaStartedAt = _tripStartAt;
     _tripDistance = 0;
     _lastNavPoint = null;
 
@@ -1289,8 +1376,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _navPoints = [here0];
     _lastNavPoint = here0;
 
-    // default nav target = final destination (may be overridden below)
-    _navDestination = _userDestination;
+    // The session advances through the selected stops one leg at a time.
+    _navDestination = _activeStopDestination;
 
     _navRemainingMeters = Geolocator.distanceBetween(pos.latitude,
         pos.longitude, _navDestination!.latitude, _navDestination!.longitude);
@@ -1419,7 +1506,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     if (_tripMode == _TripMode.metro && _metroSeq.length >= 2) {
       final stops = _metroSeq.length - 1;
       final transfers = _lastChosenRoute?.transfers ?? 0;
-      final seconds = (_lastChosenRoute?.totalSeconds ?? 0).round();
+      final seconds = _selectedRouteHistoricalSeconds ??
+          (_lastChosenRoute?.totalSeconds ?? 0).round();
       final eta = seconds > 0
           ? TimeOfDay.fromDateTime(
                   DateTime.now().add(Duration(seconds: seconds)))
@@ -1440,6 +1528,89 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       );
     }
     _attachNavStream();
+  }
+
+  Future<bool> _advanceToNextTripStop(LatLng here) async {
+    if (_activeTripStopIndex + 1 >= _activeTripStops.length) return false;
+
+    _activeTripStopIndex++;
+    final nextStop = _activeTripStops[_activeTripStopIndex];
+    _nearDestSince = null;
+    _nearFinalSince = null;
+    _metroLeg = 0;
+    _nearNextSince = null;
+    _nextMinDist = double.infinity;
+    _activeSegmentId = null;
+    _segmentStartTime = null;
+    _navDestination = nextStop.location;
+    _clearDestinationMarker();
+    _setDestinationMarker(nextStop.location, label: nextStop.label);
+
+    if (_activeTripMode == _TripMode.drive) {
+      _tripMode = _TripMode.drive;
+      _trafficEnabled = true;
+      await _renderDrivingRoute(here, nextStop.location);
+    } else {
+      final options = _planRoutes(here, nextStop.location);
+      if (options.isEmpty) {
+        // Keep the trip alive and use the same driving fallback as a normal
+        // single-destination plan when metro service cannot connect this leg.
+        _tripMode = _TripMode.drive;
+        _trafficEnabled = true;
+        await _renderDrivingRoute(here, nextStop.location);
+      } else {
+        _tripMode = _TripMode.metro;
+        _trafficEnabled = false;
+        final historicalTimes = await _historicalRouteTimes(options);
+        _lastRouteOptions = options;
+        _routeHistoryByOption = historicalTimes;
+        _lastChosenRoute = options.first;
+        _selectRouteTiming(_lastChosenRoute!);
+        _selectedRouteEtaStartedAt = DateTime.now();
+        _metroSeq = _lastChosenRoute!.nodeIds
+            .where((id) => id.contains(':'))
+            .map((id) => _lastChosenRoute!.nodes[id]!)
+            .toList();
+        _firstMileToStation = false;
+        await _renderRouteOnMap(_lastChosenRoute!);
+
+        if (_activeTripId != null && _metroSeq.length >= 2) {
+          final now = DateTime.now();
+          _segmentStartTime = now;
+          _activeSegmentId = await _travelSvc.startMetroSegment(
+            entryId: _activeTripId!,
+            fromStation: _metroSeq[0].name,
+            toStation: _metroSeq[1].name,
+            lineKey: _metroSeq[0].lineKey,
+            startedAt: now,
+          );
+        }
+      }
+    }
+
+    await _bgNav.start(dest: _navDestination!);
+    _updateOngoingTripNotification(force: true);
+    _sendTripAlert(
+      key:
+          'next_stop_${_activeTripId ?? _tripStartAt?.millisecondsSinceEpoch}_${_activeTripStopIndex}',
+      title:
+          _tripText('Continuing to next stop', 'المتابعة إلى المحطة التالية'),
+      body: _tripText(
+        'Stop ${_activeTripStopIndex + 1} of ${_activeTripStops.length}: ${nextStop.label}',
+        'المحطة ${_activeTripStopIndex + 1} من ${_activeTripStops.length}: ${nextStop.label}',
+      ),
+      kind: _TripAlertKind.progress,
+      priority: TripNotificationPriority.progress,
+      hintType: NavHintType.board,
+    );
+    if (mounted) setState(() {});
+    return true;
+  }
+
+  Future<void> _completeActiveTripStop(LatLng here) async {
+    final hasMoreStops = await _advanceToNextTripStop(here);
+    if (hasMoreStops) return;
+    await _endTrip();
   }
 
   void _attachNavStream() {
@@ -1581,7 +1752,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
             // Flip to metro
             _tripMode = _TripMode.metro;
-            if (_tripDestLL != null) _navDestination = _tripDestLL;
+            if (_activeStopDestination != null) {
+              _navDestination = _activeStopDestination;
+            }
 
             // If this is a *different* station than originally planned, re-plan from here
             final String plannedFirstId =
@@ -1589,8 +1762,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             final bool differentStation =
                 (near.id != plannedFirstId) || _lastChosenRoute == null;
 
-            if (differentStation && _tripDestLL != null) {
-              final newOpts = _planRoutes(near.pos, _tripDestLL!);
+            if (differentStation && _activeStopDestination != null) {
+              final newOpts = _planRoutes(near.pos, _activeStopDestination!);
               if (newOpts.isNotEmpty) {
                 _lastChosenRoute = newOpts.first;
                 await _renderRouteOnMap(_lastChosenRoute!);
@@ -1793,19 +1966,20 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
           // last-mile auto switch to car if destination not right next to final station
           final bool atFinalStation = (_metroLeg == _metroSeq.length - 1);
-          if (atFinalStation && _tripDestLL != null) {
+          final activeDestination = _activeStopDestination;
+          if (atFinalStation && activeDestination != null) {
             final StationNode finalSt = _metroSeq.last;
             final double dToDestFromFinal = Geolocator.distanceBetween(
                 finalSt.pos.latitude,
                 finalSt.pos.longitude,
-                _tripDestLL!.latitude,
-                _tripDestLL!.longitude);
+                activeDestination.latitude,
+                activeDestination.longitude);
 
             if (dToDestFromFinal > 80.0) {
               _tripMode = _TripMode.drive;
               _trafficEnabled = true;
-              _navDestination = _tripDestLL;
-              await _renderDrivingRoute(finalSt.pos, _tripDestLL!);
+              _navDestination = activeDestination;
+              await _renderDrivingRoute(finalSt.pos, activeDestination);
 
               _notifyOnce(
                 'lastmile_drive_${finalSt.id}',
@@ -1818,7 +1992,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               // sample, which may never arrive inside an underground station.
               final msg = getTranslated(context, 'You have arrived.');
               if (_isInForeground && mounted) _notify(msg);
-              await _endTrip();
+              await _completeActiveTripStop(finalSt.pos);
               return;
             }
           }
@@ -2083,13 +2257,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       bool allowFinalStationEnd = false;
       if (_tripMode == _TripMode.metro &&
           _metroSeq.isNotEmpty &&
-          _tripDestLL != null) {
+          _activeStopDestination != null) {
         final StationNode finalSt = _metroSeq.last;
         final double dToDestFromFinal = Geolocator.distanceBetween(
             finalSt.pos.latitude,
             finalSt.pos.longitude,
-            _tripDestLL!.latitude,
-            _tripDestLL!.longitude);
+            _activeStopDestination!.latitude,
+            _activeStopDestination!.longitude);
         allowFinalStationEnd = dToDestFromFinal <= 80.0;
       }
 
@@ -2103,7 +2277,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           if (now.difference(_nearDestSince!).inSeconds >= 8) {
             final msg = getTranslated(context, 'You have arrived.');
             if (_isInForeground && mounted) _notify(msg);
-            _endTrip();
+            await _completeActiveTripStop(uiPos);
             return;
           }
         } else {
@@ -2119,7 +2293,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             if (now.difference(_nearFinalSince!).inSeconds >= 8) {
               final msg = getTranslated(context, 'You have arrived.');
               if (_isInForeground && mounted) _notify(msg);
-              _endTrip();
+              await _completeActiveTripStop(uiPos);
               return;
             }
           } else {
@@ -2136,7 +2310,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           _navRemainingMeters < 35) {
         final msg = getTranslated(context, 'You have arrived.');
         if (_isInForeground && mounted) _notify(msg);
-        _endTrip();
+        await _completeActiveTripStop(uiPos);
         return;
       }
 
@@ -2237,6 +2411,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _tripStartAt = null;
         _tripDistance = 0;
         _lastNavPoint = null;
+        _selectedRouteHistoricalSeconds = null;
+        _selectedRouteEtaStartedAt = null;
+        _activeTripStops.clear();
+        _activeTripStopIndex = 0;
 
         _navSteps = [];
         _navStepIndex = 0;
@@ -2444,6 +2622,18 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 // Master ETA used by the UI everywhere
   double _etaSecondsForUI() {
     if (_tripMode == _TripMode.metro) {
+      final historicalSeconds = _selectedRouteHistoricalSeconds;
+      final etaStartedAt = _selectedRouteEtaStartedAt;
+      if (historicalSeconds != null && etaStartedAt != null) {
+        final remaining = historicalSeconds -
+            DateTime.now().difference(etaStartedAt).inSeconds;
+        if (remaining > 0) return remaining.toDouble();
+
+        // The recorded average has elapsed but the trip is still active.
+        // Preserve the existing live map-based ETA instead of freezing at zero.
+        return math.max(
+            60.0, _etaSecondsMetro(uiPos: _lastFixLL ?? _lastNavPoint));
+      }
       return _etaSecondsMetro(uiPos: _lastFixLL ?? _lastNavPoint);
     }
     return _etaSecondsCar();
@@ -2540,6 +2730,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _destCtrl.addListener(() {
       final t = _destCtrl.text.trim();
       if (t.isEmpty) {
+        if (!_updatingStops) _intermediateStops.clear();
         // Clear the drawn route AND remove destination
         _clearPlannedTrip();
       }
@@ -2603,6 +2794,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
       // Reset any existing plan
       _clearPlannedTrip(keepDestMarker: false);
+      _intermediateStops.clear();
 
       // Set endpoints from bot
       _userOrigin = e.from;
@@ -2630,8 +2822,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
       final options = _planRoutes(e.from, e.to); // your existing planner
       if (options.isNotEmpty) {
+        final historicalTimes = await _historicalRouteTimes(options);
+        if (!mounted) return;
         _lastRouteOptions = options;
+        _routeHistoryByOption = historicalTimes;
         _lastChosenRoute = options.first;
+        _selectRouteTiming(_lastChosenRoute!);
         await _renderRouteOnMap(_lastChosenRoute!);
         _navDestination = e.to;
       } else {
@@ -2692,6 +2888,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   Future<void> _onExternalRouteRequest(RouteRequestEvent e) async {
     // Clear any previous overlays/trip
     _clearPlannedTrip(keepDestMarker: false);
+    _intermediateStops.clear();
 
     // Set trip endpoints for the planner
     _userOrigin = e.from;
@@ -3066,6 +3263,44 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     }
   }
 
+  Future<Map<RouteOption, TripTimeEstimate>> _historicalRouteTimes(
+    List<RouteOption> options,
+  ) async {
+    final routesWithStations = <RouteOption>[];
+    final pairs = <({String fromStation, String toStation})>[];
+
+    for (final option in options) {
+      final stationIds =
+          option.nodeIds.where((id) => id.contains(':')).toList();
+      if (stationIds.length < 2) continue;
+      final from = option.nodes[stationIds.first]?.name.trim() ?? '';
+      final to = option.nodes[stationIds.last]?.name.trim() ?? '';
+      if (from.isEmpty || to.isEmpty || from == to) continue;
+      routesWithStations.add(option);
+      pairs.add((fromStation: from, toStation: to));
+    }
+    if (pairs.isEmpty) return {};
+
+    try {
+      final estimates = await _tripAnalytics.estimateMetroTrips(pairs);
+      final results = <RouteOption, TripTimeEstimate>{};
+      for (var index = 0; index < estimates.length; index++) {
+        final estimate = estimates[index];
+        if (estimate != null) results[routesWithStations[index]] = estimate;
+      }
+      return results;
+    } catch (error) {
+      debugPrint('Historical route timing lookup failed: $error');
+      return {};
+    }
+  }
+
+  void _selectRouteTiming(RouteOption option) {
+    _selectedRouteHistoricalSeconds =
+        _routeHistoryByOption[option]?.averageSeconds;
+    _selectedRouteEtaStartedAt = null;
+  }
+
   Future<void> _tryRouteIfBothReady() async {
     await _collapseSheetForRoute(size: 0.24);
 
@@ -3074,12 +3309,15 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             ? LatLng(
                 _lastKnownPosition!.latitude, _lastKnownPosition!.longitude)
             : _lastCameraTarget);
-    final destLL = _userDestination;
-    if (destLL == null) return;
+    final planningStop = _planningStop;
+    if (planningStop == null) return;
+    final destLL = planningStop.location;
+    _clearDestinationMarker();
+    _setDestinationMarker(destLL, label: planningStop.label);
 
     // DRIVING: draw car routes and return
     if (_tripMode == _TripMode.drive) {
-      _lastDestLabel = _destCtrl.text;
+      if (_intermediateStops.isEmpty) _lastDestLabel = planningStop.label;
       await _renderDrivingRoute(originLL, destLL);
       setState(() => _lastChosenRoute = null);
       return;
@@ -3102,8 +3340,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       return;
     }
 
+    final historicalTimes = await _historicalRouteTimes(options);
+    if (!mounted) return;
     _lastRouteOptions = options;
-    _lastDestLabel = _destCtrl.text;
+    _routeHistoryByOption = historicalTimes;
+    if (_intermediateStops.isEmpty) _lastDestLabel = planningStop.label;
 
     await showModalBottomSheet(
       context: context,
@@ -3113,12 +3354,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
       builder: (ctx) => RouteOptionsSheet(
         options: options,
-        destLabel: _lastDestLabel ?? '',
+        historicalTimes: historicalTimes,
+        destLabel: planningStop.label,
         cap: _cap,
         onPick: (r) async {
           if (!await _guardMetroHours()) return;
           Navigator.of(ctx).pop();
           _lastChosenRoute = r;
+          _selectRouteTiming(r);
           showDialog(
             context: context,
             barrierDismissible: false,
@@ -3126,7 +3369,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           );
           await _renderRouteOnMap(r);
           if (mounted) Navigator.of(context).pop();
-          await _showTripPreviewForRoute(r, _lastDestLabel ?? '');
+          await _showTripPreviewForRoute(r, planningStop.label);
         },
       ),
     );
@@ -3415,170 +3658,161 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     );
   }
 
-  // ===== METRO plan/render (unchanged core) =====
+  // ===== METRO plan/render =====
   List<RouteOption> _planRoutes(LatLng originLL, LatLng destLL) {
-    final adj = {
-      for (final e in _graph.baseAdj.entries) e.key: List<GEdge>.from(e.value)
-    };
+    const srcId = 'SRC';
+    const dstId = 'DST';
+    const maxRoutes = 5;
 
+    final baseAdj = {
+      for (final entry in _graph.baseAdj.entries)
+        entry.key: List<GEdge>.from(entry.value),
+    };
     final origins = _graph.kNearestStations(originLL,
         MetroGraph.originDestCandidates, MetroGraph.maxOriginDestLinkMeters);
     final dests = _graph.kNearestStations(destLL,
         MetroGraph.originDestCandidates, MetroGraph.maxOriginDestLinkMeters);
     if (origins.isEmpty || dests.isEmpty) return [];
 
-    const srcId = 'SRC', dstId = 'DST';
-    adj[srcId] = [];
-    adj[dstId] = [];
-
-    for (final o in origins) {
-      final secs = o.meters / MetroGraph.walkSpeedMps;
-      adj[srcId]!.add(
-          GEdge(to: o.node.id, seconds: secs, kind: 'walk', meters: o.meters));
+    baseAdj[srcId] = [
+      for (final origin in origins)
+        GEdge(
+          to: origin.node.id,
+          seconds: origin.meters / MetroGraph.walkSpeedMps,
+          kind: 'walk',
+          meters: origin.meters,
+        ),
+    ];
+    baseAdj[dstId] = [];
+    for (final destination in dests) {
+      (baseAdj[destination.node.id] ??= []).add(
+        GEdge(
+          to: dstId,
+          seconds: destination.meters / MetroGraph.walkSpeedMps,
+          kind: 'walk',
+          meters: destination.meters,
+        ),
+      );
     }
-    for (final d in dests) {
-      final secs = d.meters / MetroGraph.walkSpeedMps;
-      (adj[d.node.id] ??= [])
-          .add(GEdge(to: dstId, seconds: secs, kind: 'walk', meters: d.meters));
-    }
 
-    final nodes = {..._graph.stationMap};
-    final results = <RouteOption>[];
-    final triedPairs = <String>{};
+    Map<String, List<GEdge>> copyAdjacency() => {
+          for (final entry in baseAdj.entries)
+            entry.key: List<GEdge>.from(entry.value),
+        };
 
-    for (final o in origins) {
-      for (final d in dests) {
-        final key = '${o.node.id}->${d.node.id}';
-        if (triedPairs.contains(key)) continue;
-        triedPairs.add(key);
+    String edgeKey(String from, GEdge edge) =>
+        '$from>${edge.to}|${edge.kind}|${edge.lineKey ?? ''}|'
+        '${edge.seconds}|${edge.meters ?? ''}';
 
-        final res = _graph.dijkstra(srcId, dstId, adj);
-        if (res == null) continue;
-
-        final path = res.path;
-        final edges = res.edges;
-
-        double seconds = 0, walkMeters = 0;
-        final lineSeq = <String>[];
-        String? prevLine;
-        for (final e in edges) {
-          seconds += e.seconds;
-          if (e.kind == 'walk' || e.kind == 'transfer') {
-            walkMeters += (e.meters ?? 0);
-          }
-          if (e.kind == 'metro' && e.lineKey != null) {
-            if (prevLine != e.lineKey) {
-              prevLine = e.lineKey;
-              lineSeq.add(e.lineKey!);
-            }
-          }
+    RouteOption buildOption(dynamic result) {
+      final path = List<String>.from(result.path as List);
+      final edges = List<GEdge>.from(result.edges as List);
+      double seconds = 0;
+      double walkMeters = 0;
+      final lineSequence = <String>[];
+      String? previousLine;
+      for (final edge in edges) {
+        seconds += edge.seconds;
+        if (edge.kind == 'walk' || edge.kind == 'transfer') {
+          walkMeters += edge.meters ?? 0;
         }
-        final transfers = math.max(0, lineSeq.length - 1);
-
-        final opt = RouteOption(
-          nodeIds: path,
-          nodes: nodes,
-          edgesInOrder: edges,
-          totalSeconds: seconds,
-          walkMeters: walkMeters,
-          transfers: transfers,
-          lineSequence: lineSeq,
-          originLL: originLL,
-          destLL: destLL,
-        );
-
-        String lastMetroId(List<String> path) {
-          for (int i = path.length - 2; i >= 1; i--) {
-            final id = path[i];
-            if (id.contains(':')) return id;
-          }
-          return '';
-        }
-
-        final sig = '${lineSeq.join(">")}::${lastMetroId(path)}';
-        if (!results.any((r) =>
-            '${r.lineSequence.join(">")}::${lastMetroId(r.nodeIds)}' == sig)) {
-          results.add(opt);
-        }
-
-        if (results.length < 3) {
-          GEdge? primary;
-          for (final e in edges) {
-            if (e.kind == 'transfer') {
-              if (primary == null || (e.meters ?? 0) > (primary.meters ?? 0)) {
-                primary = e;
-              }
-            }
-          }
-          if (primary != null) {
-            String? removedFrom;
-            GEdge? removedEdge;
-            adj.forEach((k, list) {
-              final ix = list.indexWhere((ee) =>
-                  ee.kind == 'transfer' &&
-                  ee.to == primary!.to &&
-                  (ee.meters ?? 0) == (primary!.meters ?? 0) &&
-                  (ee.seconds == primary!.seconds));
-              if (ix >= 0) {
-                removedFrom = k;
-                removedEdge = list.removeAt(ix);
-              }
-            });
-
-            final res2 = _graph.dijkstra(srcId, dstId, adj);
-            if (res2 != null) {
-              final p2 = res2.path;
-              final e2 = res2.edges;
-              double s2 = 0, w2 = 0;
-              final ls2 = <String>[];
-              String? pl2;
-              for (final e in e2) {
-                s2 += e.seconds;
-                if (e.kind == 'walk' || e.kind == 'transfer') {
-                  w2 += (e.meters ?? 0);
-                }
-                if (e.kind == 'metro' && e.lineKey != null) {
-                  if (pl2 != e.lineKey) {
-                    pl2 = e.lineKey;
-                    ls2.add(e.lineKey!);
-                  }
-                }
-              }
-              String lastMetroId2(List<String> path) {
-                for (int i = path.length - 2; i >= 1; i--) {
-                  final id = path[i];
-                  if (id.contains(':')) return id;
-                }
-                return '';
-              }
-
-              final sig2 = '${ls2.join(">")}::${lastMetroId2(p2)}';
-              if (!results.any((r) =>
-                  '${r.lineSequence.join(">")}::${lastMetroId(r.nodeIds)}' ==
-                  sig2)) {
-                results.add(RouteOption(
-                  nodeIds: p2,
-                  nodes: nodes,
-                  edgesInOrder: e2,
-                  totalSeconds: s2,
-                  walkMeters: w2,
-                  transfers: math.max(0, ls2.length - 1),
-                  lineSequence: ls2,
-                  originLL: originLL,
-                  destLL: destLL,
-                ));
-              }
-            }
-            if (removedFrom != null && removedEdge != null) {
-              (adj[removedFrom!] ??= []).add(removedEdge!);
-            }
+        if (edge.kind == 'metro' && edge.lineKey != null) {
+          if (previousLine != edge.lineKey) {
+            previousLine = edge.lineKey;
+            lineSequence.add(edge.lineKey!);
           }
         }
       }
+      return RouteOption(
+        nodeIds: path,
+        nodes: {..._graph.stationMap},
+        edgesInOrder: edges,
+        totalSeconds: seconds,
+        walkMeters: walkMeters,
+        transfers: math.max(0, lineSequence.length - 1),
+        lineSequence: lineSequence,
+        originLL: originLL,
+        destLL: destLL,
+      );
     }
 
-    results.sort((a, b) => a.totalSeconds.compareTo(b.totalSeconds));
-    return results.take(3).toList();
+    List<String> guideCheckpoints(RouteOption route) {
+      final checkpoints = <String>[];
+      void addCheckpoint(String nodeId) {
+        final stationName = route.nodes[nodeId]?.name.trim() ?? '';
+        if (stationName.isEmpty ||
+            (checkpoints.isNotEmpty &&
+                checkpoints.last.toLowerCase() == stationName.toLowerCase())) {
+          return;
+        }
+        checkpoints.add(stationName);
+      }
+
+      String? previousLine;
+      String? lastMetroDestination;
+      for (var index = 0; index < route.edgesInOrder.length; index++) {
+        final edge = route.edgesInOrder[index];
+        if (edge.kind != 'metro') continue;
+        if (previousLine == null || previousLine != edge.lineKey) {
+          addCheckpoint(route.nodeIds[index]);
+        }
+        previousLine = edge.lineKey;
+        lastMetroDestination = route.nodeIds[index + 1];
+      }
+      if (lastMetroDestination != null) addCheckpoint(lastMetroDestination);
+      return checkpoints;
+    }
+
+    String normalizeCheckpoint(String value) =>
+        value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
+
+    // Internal node IDs may represent separate platforms at the same physical
+    // station. Deduplicate by the journey a passenger actually sees instead.
+    String routeSignature(RouteOption route) =>
+        '${route.lineSequence.join('>')}|'
+        '${guideCheckpoints(route).map(normalizeCheckpoint).join('>')}';
+
+    // Each candidate excludes one already-used graph edge, so every displayed
+    // guide is a real alternative produced by the existing metro graph.
+    final routeResults = <RouteOption>[];
+    final routeSignatures = <String>{};
+    final pendingBans = <Set<String>>[{}];
+    final seenBans = <String>{''};
+    var candidateIndex = 0;
+
+    while (candidateIndex < pendingBans.length &&
+        candidateIndex < 48 &&
+        routeResults.length < maxRoutes) {
+      final banned = pendingBans[candidateIndex++];
+      final adjacency = copyAdjacency();
+      for (final entry in adjacency.entries) {
+        entry.value
+            .removeWhere((edge) => banned.contains(edgeKey(entry.key, edge)));
+      }
+
+      final result = _graph.dijkstra(srcId, dstId, adjacency);
+      if (result == null) continue;
+      final option = buildOption(result);
+      if (!routeSignatures.add(routeSignature(option))) continue;
+      routeResults.add(option);
+
+      for (var index = 0; index < option.edgesInOrder.length; index++) {
+        final edge = option.edgesInOrder[index];
+        final from = option.nodeIds[index];
+        final canVary = edge.kind == 'metro' ||
+            edge.kind == 'transfer' ||
+            from == srcId ||
+            edge.to == dstId;
+        if (!canVary) continue;
+
+        final nextBanned = {...banned, edgeKey(from, edge)};
+        final signature = (nextBanned.toList()..sort()).join(';');
+        if (seenBans.add(signature)) pendingBans.add(nextBanned);
+      }
+    }
+
+    routeResults.sort((a, b) => a.totalSeconds.compareTo(b.totalSeconds));
+    return routeResults;
   }
 
   Future<void> _renderRouteOnMap(RouteOption opt) async {
@@ -3870,7 +4104,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       builder: (_) => TripPreviewSheet(
-        title: '${getTranslated(context, 'To')} ${_lastDestLabel ?? ''}',
+        title: '${getTranslated(context, 'To')} $destLabel',
         fromLabel: getTranslated(context, 'From my location'),
         start: start,
         arrival: arrival,
@@ -5353,9 +5587,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                         nextByBannerIdx != currentIdx) {
                                       forward = nextByBannerIdx > currentIdx;
                                     } else {
-                                      final LatLng? destination = _tripDestLL ??
-                                          _navDestination ??
-                                          _userDestination;
+                                      final LatLng? destination =
+                                          _activeStopDestination ??
+                                              _navDestination ??
+                                              _tripDestLL ??
+                                              _userDestination;
                                       if (destination != null) {
                                         final int destinationIdx =
                                             enriched.indexWhere((e) =>
@@ -5612,6 +5848,112 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                         focusNode: _destFocus,
                       ),
 
+                      if (_userDestination != null)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: SizedBox(
+                            width: double.infinity,
+                            child: OutlinedButton.icon(
+                              onPressed: _addCurrentDestinationAsStop,
+                              icon: const Icon(Icons.add_location_alt_rounded),
+                              label: Text(getTranslated(context, 'Add stop')),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: cs.primary,
+                                side: BorderSide(
+                                    color: cs.primary.withOpacity(.45)),
+                                padding:
+                                    const EdgeInsets.symmetric(vertical: 12),
+                              ),
+                            ),
+                          ),
+                        ),
+
+                      if (_intermediateStops.isNotEmpty)
+                        Container(
+                          margin: const EdgeInsets.only(top: 4),
+                          padding: const EdgeInsets.fromLTRB(12, 10, 8, 8),
+                          decoration: BoxDecoration(
+                            color: cs.primary.withOpacity(
+                              theme.brightness == Brightness.dark ? .14 : .07,
+                            ),
+                            borderRadius: BorderRadius.circular(16),
+                            border:
+                                Border.all(color: cs.primary.withOpacity(.24)),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '${getTranslated(context, 'Stops')} · ${_intermediateStops.length}',
+                                style: theme.textTheme.labelLarge?.copyWith(
+                                  color: cs.primary,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              ...List.generate(_intermediateStops.length,
+                                  (index) {
+                                final stop = _intermediateStops[index];
+                                return Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 28,
+                                      child: Text(
+                                        '${index + 1}',
+                                        style: theme.textTheme.labelLarge
+                                            ?.copyWith(
+                                          color: cs.primary,
+                                          fontWeight: FontWeight.w900,
+                                        ),
+                                      ),
+                                    ),
+                                    const Icon(Icons.place_rounded, size: 17),
+                                    const SizedBox(width: 7),
+                                    Expanded(
+                                      child: Text(
+                                        stop.label,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: theme.textTheme.bodyMedium
+                                            ?.copyWith(
+                                          fontWeight: FontWeight.w700,
+                                        ),
+                                      ),
+                                    ),
+                                    IconButton(
+                                      tooltip:
+                                          getTranslated(context, 'Move up'),
+                                      onPressed: index == 0
+                                          ? null
+                                          : () =>
+                                              _moveIntermediateStop(index, -1),
+                                      icon: const Icon(
+                                          Icons.keyboard_arrow_up_rounded),
+                                    ),
+                                    IconButton(
+                                      tooltip:
+                                          getTranslated(context, 'Move down'),
+                                      onPressed: index ==
+                                              _intermediateStops.length - 1
+                                          ? null
+                                          : () =>
+                                              _moveIntermediateStop(index, 1),
+                                      icon: const Icon(
+                                          Icons.keyboard_arrow_down_rounded),
+                                    ),
+                                    IconButton(
+                                      tooltip: getTranslated(context, 'Remove'),
+                                      onPressed: () =>
+                                          _removeIntermediateStop(index),
+                                      icon: const Icon(Icons.close_rounded),
+                                    ),
+                                  ],
+                                );
+                              }),
+                            ],
+                          ),
+                        ),
+
                       const SizedBox(height: 8),
 
                       // Metro / Car selector
@@ -5675,12 +6017,15 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                 ),
                                 builder: (ctx) => RouteOptionsSheet(
                                   options: _lastRouteOptions!,
-                                  destLabel: _lastDestLabel!,
+                                  historicalTimes: _routeHistoryByOption,
+                                  destLabel:
+                                      _planningStop?.label ?? _lastDestLabel!,
                                   cap: _cap,
                                   onPick: (r) async {
                                     if (!await _guardMetroHours()) return;
                                     Navigator.of(ctx).pop();
                                     _lastChosenRoute = r;
+                                    _selectRouteTiming(r);
                                     showDialog(
                                       context: context,
                                       barrierDismissible: false,
@@ -5696,7 +6041,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     await _renderRouteOnMap(r);
                                     if (mounted) Navigator.of(context).pop();
                                     await _showTripPreviewForRoute(
-                                        r, _lastDestLabel!);
+                                        r,
+                                        _planningStop?.label ??
+                                            _lastDestLabel!);
                                   },
                                 ),
                               );

@@ -26,6 +26,30 @@ class TripAnalyticsService {
     );
   }
 
+  /// Resolves several station pairs from one Firebase read. Route-selection
+  /// cards use this so opening the chooser does not make one request per card.
+  Future<List<TripTimeEstimate?>> estimateMetroTrips(
+    Iterable<({String fromStation, String toStation})> routes,
+  ) async {
+    final requested = routes.toList(growable: false);
+    if (requested.isEmpty) return const [];
+
+    final trips = await _completedTripRecords();
+    if (trips == null) {
+      return List<TripTimeEstimate?>.filled(requested.length, null);
+    }
+
+    return requested
+        .map(
+          (route) => estimateFromRecordedTrips(
+            trips: trips,
+            fromStation: route.fromStation,
+            toStation: route.toStation,
+          ),
+        )
+        .toList(growable: false);
+  }
+
   /// Looks up the requested direction first, then uses the inverse route only
   /// when no completed trip has recorded the requested station order.
   Future<TripTimeLookup?> estimateMetroTripWithReverseFallback({

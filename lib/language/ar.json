@@ -355,7 +355,14 @@
   "search.history.hint": "ابحث عن الوجهة أو نقطة الانطلاق",
   "Mode": "الوضع",
   "Search": "بحث",
-  "Stops": "عدد المحطات",
+  "Stops": "المحطات",
+  "Add stop": "إضافة محطة أخرى",
+  "Choose a destination before adding a stop.": "اختر وجهة قبل إضافة محطة.",
+  "Move up": "نقل لأعلى",
+  "Move down": "نقل لأسفل",
+  "Remove": "إزالة",
+  "Choose your route": "اختر مسارك",
+  "Show more routes": "عرض المزيد من المسارات",
   "Exchanges": "عدد التحويلات",
   "Estimated metro travel time": "الوقت المقدر لرحلة المترو",
   "Exchange penalty": "زمن تحويل الخط",
@@ -472,6 +479,9 @@
   "trip.pdf.export": "تصدير PDF",
   "trip.pdf.generating": "جارٍ إنشاء التقرير...",
   "trip.pdf.ready": "تقرير الرحلة جاهز للحفظ أو المشاركة.",
-  "trip.pdf.failed": "تعذر إنشاء تقرير الرحلة. حاول مرة أخرى."
+  "trip.pdf.failed": "تعذر إنشاء تقرير الرحلة. حاول مرة أخرى.",
+  "Recorded average": "المتوسط المسجل",
+  "completed trips": "رحلات مكتملة",
+  "Route via": "عبر"
 
 }
