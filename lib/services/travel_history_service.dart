@@ -92,16 +92,36 @@ class TravelHistoryService {
     required int distanceMeters,
     required int durationSeconds,
     DateTime? finishedAt,
+    String? openMetroSegmentId,
+    String? openMetroSegmentDestination,
+    int? openMetroSegmentDurationSeconds,
   }) async {
     final uid = _auth.currentUser?.uid;
     if (uid == null) return;
 
     final ref = _db.ref('App/TravelHistory/$uid/$entryId');
-    await ref.update({
+    final endedAt = finishedAt ?? DateTime.now();
+    final updates = <String, dynamic>{
       'distanceMeters': distanceMeters,
       'durationSeconds': durationSeconds,
-      'finishedAt': (finishedAt ?? DateTime.now()).millisecondsSinceEpoch,
-    });
+      'finishedAt': endedAt.millisecondsSinceEpoch,
+    };
+
+    // A trip can be ended while its final station segment is still open.
+    // Persist both changes together so history never shows a completed trip
+    // with an unfinished final segment.
+    if (openMetroSegmentId != null &&
+        openMetroSegmentId.isNotEmpty &&
+        openMetroSegmentDestination != null &&
+        openMetroSegmentDestination.isNotEmpty &&
+        openMetroSegmentDurationSeconds != null) {
+      final segmentPath = 'metroSegments/$openMetroSegmentId';
+      updates['$segmentPath/toStation'] = openMetroSegmentDestination;
+      updates['$segmentPath/seconds'] = openMetroSegmentDurationSeconds;
+      updates['$segmentPath/finishedAt'] = endedAt.millisecondsSinceEpoch;
+    }
+
+    await ref.update(updates);
   }
 
   // ────────────────────────── Metro segment helpers ──────────────────────────

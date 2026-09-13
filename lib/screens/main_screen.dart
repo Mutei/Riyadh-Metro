@@ -1812,6 +1812,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 '${getTranslated(context, "Drive/walk to destination from")} ${finalSt.name}',
                 type: NavHintType.walk,
               );
+            } else {
+              // The confirmed final-station arrival is sufficient for a
+              // station destination. Do not wait for a second stationary GPS
+              // sample, which may never arrive inside an underground station.
+              final msg = getTranslated(context, 'You have arrived.');
+              if (_isInForeground && mounted) _notify(msg);
+              await _endTrip();
+              return;
             }
           }
         }
@@ -2137,105 +2145,119 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     });
   }
 
-  void _endTrip() async {
+  Future<void> _endTrip() async {
     if (_endingTrip) return;
     _endingTrip = true;
     final completedTripId = _activeTripId;
     final startedAt = _tripStartAt;
-    // Stop background session (but do not call this in dispose)
-    await _bgNav.stop();
-    _uiNavSub?.cancel();
-    _uiNavSub = null;
+    final openSegmentId = _activeSegmentId;
+    final openSegmentStartedAt = _segmentStartTime;
+    final endedAt = DateTime.now();
 
-    _predictTimer?.cancel();
-    _predictTimer = null;
+    try {
+      // Stopping location tracking must not prevent the persisted trip from
+      // being finalized if Android reports a platform-stream cancellation.
+      try {
+        await _bgNav.stop();
+      } catch (error) {
+        debugPrint('Trip navigation stop failed: $error');
+      }
+      try {
+        await _uiNavSub?.cancel();
+      } catch (error) {
+        debugPrint('Trip UI location listener stop failed: $error');
+      }
+      _uiNavSub = null;
+      _predictTimer?.cancel();
+      _predictTimer = null;
 
-    // Close any open metro segment before finalizing the trip
-    if (_tripMode == _TripMode.metro &&
-        _activeTripId != null &&
-        _activeSegmentId != null &&
-        _segmentStartTime != null) {
-      final int segSecs =
-          DateTime.now().difference(_segmentStartTime!).inSeconds;
-      await _travelSvc.finishMetroSegment(
-        entryId: _activeTripId!,
-        segmentId: _activeSegmentId!,
-        toStation: (_metroSeq.isNotEmpty) ? _metroSeq.last.name : '—',
-        seconds: segSecs,
-        finishedAt: DateTime.now(),
-      );
-      _activeSegmentId = null;
-      _segmentStartTime = null;
+      if (completedTripId != null && startedAt != null) {
+        final duration = endedAt.difference(startedAt).inSeconds;
+        final openSegmentSeconds = openSegmentStartedAt == null
+            ? null
+            : endedAt.difference(openSegmentStartedAt).inSeconds;
+        final openSegmentDestination = _metroSeq.isEmpty
+            ? null
+            : _metroSeq[math.min(_metroLeg + 1, _metroSeq.length - 1)].name;
+        try {
+          await _travelSvc
+              .finishTrip(
+                entryId: completedTripId,
+                distanceMeters: _tripDistance,
+                durationSeconds: duration,
+                finishedAt: endedAt,
+                openMetroSegmentId: openSegmentId,
+                openMetroSegmentDestination: openSegmentDestination,
+                openMetroSegmentDurationSeconds: openSegmentSeconds,
+              )
+              .timeout(const Duration(seconds: 8));
+        } catch (error) {
+          debugPrint('Trip history finalization failed: $error');
+        }
+      }
+
+      // Keep only the completion summary; all earlier prompts belong to the
+      // completed journey and should no longer be actionable.
+      try {
+        await AppLocalNotifications.clearTripEvents();
+        await AppLocalNotifications.clearOngoingTripStatus();
+      } catch (error) {
+        debugPrint('Trip notification cleanup failed: $error');
+      }
+      _lastOngoingTripNotificationAt = null;
+      _lastOngoingTripNotificationContent = null;
+      if (startedAt != null) {
+        final minutes = math.max(1, endedAt.difference(startedAt).inMinutes);
+        _sendTripAlert(
+          key:
+              'trip_completed_${completedTripId ?? startedAt.millisecondsSinceEpoch}',
+          title: _tripText('Trip completed', 'اكتملت الرحلة'),
+          body: _tripText(
+            'Actual travel time: $minutes min.',
+            'المدة الفعلية للرحلة: $minutes دقيقة.',
+          ),
+          kind: _TripAlertKind.completed,
+          priority: TripNotificationPriority.progress,
+          hintType: NavHintType.alight,
+        );
+      }
+    } finally {
+      if (!mounted) return;
+      setState(() {
+        _navigating = false;
+        _endingTrip = false;
+        _followEnabled = true;
+        _navPolyline = null;
+        _navPoints.clear();
+        _navDestination = null;
+        _navRemainingMeters = 0;
+        _navSpeedMps = 0;
+
+        _activeTripId = null;
+        _tripStartAt = null;
+        _tripDistance = 0;
+        _lastNavPoint = null;
+
+        _navSteps = [];
+        _navStepIndex = 0;
+        _navNow = null;
+        _navNext = null;
+        _trafficEnabled = false;
+
+        _userArrowMarker = null;
+
+        // Reset metro helpers
+        _nearDestSince = null;
+        _nearFinalSince = null;
+        _metroLeg = 0;
+        _nearNextSince = null;
+        _nextMinDist = double.infinity;
+
+        // Segment bookkeeping
+        _activeSegmentId = null;
+        _segmentStartTime = null;
+      });
     }
-
-    // finalize history if started
-    if (_activeTripId != null && _tripStartAt != null) {
-      final duration = DateTime.now().difference(_tripStartAt!).inSeconds;
-      await _travelSvc.finishTrip(
-        entryId: _activeTripId!,
-        distanceMeters: _tripDistance,
-        durationSeconds: duration,
-        finishedAt: DateTime.now(),
-      );
-    }
-
-    // Keep only the completion summary; all earlier prompts belong to the
-    // completed journey and should no longer be actionable.
-    await AppLocalNotifications.clearTripEvents();
-    await AppLocalNotifications.clearOngoingTripStatus();
-    _lastOngoingTripNotificationAt = null;
-    _lastOngoingTripNotificationContent = null;
-    if (startedAt != null) {
-      final duration = DateTime.now().difference(startedAt);
-      final minutes = math.max(1, duration.inMinutes);
-      _sendTripAlert(
-        key:
-            'trip_completed_${completedTripId ?? startedAt.millisecondsSinceEpoch}',
-        title: _tripText('Trip completed', 'اكتملت الرحلة'),
-        body: _tripText(
-          'Actual travel time: $minutes min.',
-          'المدة الفعلية للرحلة: $minutes دقيقة.',
-        ),
-        kind: _TripAlertKind.completed,
-        priority: TripNotificationPriority.progress,
-        hintType: NavHintType.alight,
-      );
-    }
-
-    setState(() {
-      _navigating = false;
-      _endingTrip = false;
-      _followEnabled = true;
-      _navPolyline = null;
-      _navPoints.clear();
-      _navDestination = null;
-      _navRemainingMeters = 0;
-      _navSpeedMps = 0;
-
-      _activeTripId = null;
-      _tripStartAt = null;
-      _tripDistance = 0;
-      _lastNavPoint = null;
-
-      _navSteps = [];
-      _navStepIndex = 0;
-      _navNow = null;
-      _navNext = null;
-      _trafficEnabled = false;
-
-      _userArrowMarker = null;
-
-      // Reset metro helpers
-      _nearDestSince = null;
-      _nearFinalSince = null;
-      _metroLeg = 0;
-      _nearNextSince = null;
-      _nextMinDist = double.infinity;
-
-      // segment bookkeeping
-      _activeSegmentId = null;
-      _segmentStartTime = null;
-    });
   }
 
   bool _preboardCar = false; // true while driving to the first metro station
