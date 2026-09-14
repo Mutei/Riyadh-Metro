@@ -3267,17 +3267,25 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     List<RouteOption> options,
   ) async {
     final routesWithStations = <RouteOption>[];
-    final pairs = <({String fromStation, String toStation})>[];
+    final pairs = <({
+      String fromStation,
+      String toStation,
+      List<String> lineSequence,
+    })>[];
 
     for (final option in options) {
       final stationIds =
           option.nodeIds.where((id) => id.contains(':')).toList();
-      if (stationIds.length < 2) continue;
+      if (stationIds.length < 2 || option.lineSequence.isEmpty) continue;
       final from = option.nodes[stationIds.first]?.name.trim() ?? '';
       final to = option.nodes[stationIds.last]?.name.trim() ?? '';
       if (from.isEmpty || to.isEmpty || from == to) continue;
       routesWithStations.add(option);
-      pairs.add((fromStation: from, toStation: to));
+      pairs.add((
+        fromStation: from,
+        toStation: to,
+        lineSequence: List<String>.from(option.lineSequence),
+      ));
     }
     if (pairs.isEmpty) return {};
 

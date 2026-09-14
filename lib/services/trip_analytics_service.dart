@@ -15,6 +15,7 @@ class TripAnalyticsService {
   Future<TripTimeEstimate?> estimateMetroTrip({
     required String fromStation,
     required String toStation,
+    List<String>? expectedLineSequence,
   }) async {
     final trips = await _completedTripRecords();
     if (trips == null) return null;
@@ -23,13 +24,22 @@ class TripAnalyticsService {
       trips: trips,
       fromStation: fromStation,
       toStation: toStation,
+      expectedLineSequence: expectedLineSequence,
     );
   }
 
   /// Resolves several station pairs from one Firebase read. Route-selection
   /// cards use this so opening the chooser does not make one request per card.
+  /// A result is returned only when its completed records use the card's exact
+  /// ordered line sequence as well as its start and end stations.
   Future<List<TripTimeEstimate?>> estimateMetroTrips(
-    Iterable<({String fromStation, String toStation})> routes,
+    Iterable<
+            ({
+              String fromStation,
+              String toStation,
+              List<String> lineSequence,
+            })>
+        routes,
   ) async {
     final requested = routes.toList(growable: false);
     if (requested.isEmpty) return const [];
@@ -45,6 +55,7 @@ class TripAnalyticsService {
             trips: trips,
             fromStation: route.fromStation,
             toStation: route.toStation,
+            expectedLineSequence: route.lineSequence,
           ),
         )
         .toList(growable: false);
@@ -92,6 +103,7 @@ class TripAnalyticsService {
     required Iterable<Map<Object?, Object?>> trips,
     required String fromStation,
     required String toStation,
+    List<String>? expectedLineSequence,
   }) {
     final expectedFrom = _normalize(fromStation);
     final expectedTo = _normalize(toStation);
@@ -100,6 +112,10 @@ class TripAnalyticsService {
         expectedFrom == expectedTo) {
       return null;
     }
+    final expectedLines = expectedLineSequence == null
+        ? null
+        : _collapsedLines(expectedLineSequence);
+    if (expectedLines != null && expectedLines.isEmpty) return null;
 
     final samples = <_TripSample>[];
     for (final trip in trips) {
@@ -108,6 +124,7 @@ class TripAnalyticsService {
         _segmentsFor(trip['metroSegments']),
         fromStation: expectedFrom,
         toStation: expectedTo,
+        expectedLineSequence: expectedLines,
       );
       if (sample != null) samples.add(sample);
     }
@@ -165,6 +182,7 @@ class TripAnalyticsService {
     List<_MetroSegment> segments, {
     required String fromStation,
     required String toStation,
+    List<String>? expectedLineSequence,
   }) {
     final originTimes = <int>[];
     final destinationTimes = <int>[];
@@ -195,9 +213,17 @@ class TripAnalyticsService {
           .map((segment) => segment.lineKey)
           .where((line) => line.isNotEmpty)
           .toList();
+      final collapsedLines = _collapsedLines(lines);
+      if (expectedLineSequence != null &&
+          !_sameLineSequence(collapsedLines, expectedLineSequence)) {
+        continue;
+      }
       final durationSeconds = ((finishedAt - startedAt) / 1000).round();
       if (durationSeconds > 0) {
-        return _TripSample(durationSeconds: durationSeconds, lines: lines);
+        return _TripSample(
+          durationSeconds: durationSeconds,
+          lines: collapsedLines,
+        );
       }
     }
     return null;
@@ -321,6 +347,27 @@ class TripAnalyticsService {
       .replaceAll(RegExp(r'[^a-z0-9\u0621-\u064A]+'), ' ')
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
+
+  static List<String> _collapsedLines(Iterable<String> lines) {
+    final collapsed = <String>[];
+    for (final line in lines) {
+      final normalized = line.trim().toLowerCase();
+      if (normalized.isEmpty ||
+          (collapsed.isNotEmpty && collapsed.last == normalized)) {
+        continue;
+      }
+      collapsed.add(normalized);
+    }
+    return collapsed;
+  }
+
+  static bool _sameLineSequence(List<String> first, List<String> second) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (first[index] != second[index]) return false;
+    }
+    return true;
+  }
 
   static int _asInt(dynamic value) {
     if (value is int) return value;

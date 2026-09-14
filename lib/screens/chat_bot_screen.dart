@@ -124,8 +124,8 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
 
   void _addGreeting() {
     _messages.add(_Msg.bot(
-      'Hi! I can help with Darb. Try “Nearest station”, “Metro hours”, or “How long does it take from KAFD to STC?”.',
-      'مرحباً! أستطيع مساعدتك في درب. جرّب "أقرب محطة"، "ساعات المترو"، أو "كم تستغرق الرحلة من المركز المالي إلى STC؟".',
+      'Hi! I can help with Darb. Try “Nearest station”, “Metro hours”, “How long does it take from KAFD to STC?”, or “When should I leave KAFD to arrive at STC by 8:00 PM?”.',
+      'مرحباً! أستطيع مساعدتك في درب. جرّب "أقرب محطة"، "ساعات المترو"، "كم تستغرق الرحلة من المركز المالي إلى STC؟"، أو "متى أبدأ من المركز المالي للوصول إلى STC الساعة 8:00 مساءً؟".',
       lang: _localeIsArabic ? _Lang.ar : _Lang.en,
     ));
     _persistConversation();
@@ -1042,6 +1042,24 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
       return;
     }
 
+    final arrivalPlan = _extractArrivalPlan(text);
+    if (_isArrivalTimeIntent(text)) {
+      if (arrivalPlan == null) {
+        _addBotText(
+          'Please include the start station, destination station, and arrival time. For example: “When should I leave KAFD to arrive at STC by 8:00 PM?”',
+          'يرجى تحديد محطة البداية والوجهة ووقت الوصول. مثال: "متى أبدأ من المركز المالي للوصول إلى STC الساعة 8:00 مساءً؟"',
+          lang: _replyLang(),
+        );
+      } else {
+        _handleArrivalPlanRequest(
+          arrivalPlan.from,
+          arrivalPlan.to,
+          arrivalPlan.arrivalBy,
+        );
+      }
+      return;
+    }
+
     final timeRoute = _extractTripTimeRoute(text);
     if (_isRouteComparisonIntent(text) && timeRoute != null) {
       _handleRouteComparisonRequest(timeRoute.$1, timeRoute.$2);
@@ -1264,6 +1282,123 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     final m2 = ar.firstMatch(s);
     if (m2 != null) return (m2.group(1)!.trim(), m2.group(2)!.trim());
     return null;
+  }
+
+  bool _isArrivalTimeIntent(String raw) {
+    final query = _norm(raw);
+    return query.contains('when should i leave') ||
+        query.contains('when should i start') ||
+        query.contains('what time should i leave') ||
+        query.contains('what time should i start') ||
+        query.contains('which time should i leave') ||
+        query.contains('which time should i start') ||
+        query.contains('when do i need to leave') ||
+        query.contains('arrive by') ||
+        query.contains('reach by') ||
+        query.contains('leave by') ||
+        query.contains('متى ابدا') ||
+        query.contains('متى ابدأ') ||
+        query.contains('متى اغادر') ||
+        query.contains('متى أبدأ') ||
+        query.contains('متى أغادر') ||
+        query.contains('للوصول') ||
+        query.contains('اصل الساعة') ||
+        query.contains('أصل الساعة');
+  }
+
+  String _westernDigits(String value) {
+    const arabicDigits = '٠١٢٣٤٥٦٧٨٩';
+    var result = value;
+    for (var index = 0; index < arabicDigits.length; index++) {
+      result = result.replaceAll(arabicDigits[index], index.toString());
+    }
+    return result;
+  }
+
+  ({String from, String to, DateTime arrivalBy})? _extractArrivalPlan(
+      String raw) {
+    final searchable = _westernDigits(raw);
+    final english = RegExp(
+      r'\b(?:(today|tomorrow)\s+)?(?:by|before|at)\s+(\d{1,2}(?::\d{2})?)\s*(a\.?m\.?|p\.?m\.?)?\b',
+      caseSensitive: false,
+    ).firstMatch(searchable);
+    final arabic = RegExp(
+      r'(?:(اليوم|غدًا?|بكرة)\s*)?(?:الساعة|عند|قبل|بحلول)\s*(\d{1,2}(?::\d{2})?)\s*(صباحا?|مساءً?|ص|م)?',
+    ).firstMatch(searchable);
+    final match = english ?? arabic;
+    if (match == null) return null;
+
+    final isEnglish = english != null;
+    final time = match.group(2);
+    if (time == null) return null;
+    final clock = time.split(':');
+    var hour = int.tryParse(clock.first) ?? -1;
+    final minute = clock.length == 2 ? int.tryParse(clock.last) ?? -1 : 0;
+    if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return null;
+
+    final marker = (match.group(3) ?? '').toLowerCase();
+    if (isEnglish) {
+      final compact = marker.replaceAll('.', '');
+      if (compact == 'pm' && hour < 12) hour += 12;
+      if (compact == 'am' && hour == 12) hour = 0;
+    } else {
+      if (marker.contains('مساء') || marker == 'م') {
+        if (hour < 12) hour += 12;
+      } else if (marker.contains('صباح') || marker == 'ص') {
+        if (hour == 12) hour = 0;
+      }
+    }
+
+    final now = DateTime.now();
+    final dayMarker = (match.group(1) ?? '').toLowerCase();
+    final tomorrow = dayMarker.contains('tomorrow') ||
+        dayMarker.contains('غد') ||
+        dayMarker.contains('بكرة');
+    var arrivalBy = DateTime(now.year, now.month, now.day, hour, minute);
+    if (tomorrow) {
+      arrivalBy = arrivalBy.add(const Duration(days: 1));
+    } else if (!dayMarker.contains('today') &&
+        !dayMarker.contains('اليوم') &&
+        arrivalBy.isBefore(now)) {
+      arrivalBy = arrivalBy.add(const Duration(days: 1));
+    }
+
+    var routeText = raw.replaceRange(match.start, match.end, ' ');
+    routeText = routeText.replaceAll(
+      RegExp(
+        r'\b(?:to\s+)?(?:arrive|reach|get)\s+(?:at|to)\s+',
+        caseSensitive: false,
+      ),
+      'to ',
+    );
+    routeText = routeText.replaceAll(
+      RegExp(r'للوصول\s+إ?لى'),
+      'إلى',
+    );
+    final reachFrom = RegExp(
+      r'\b(?:arrive\s+at|reach|get\s+to)\s+(.+?)\s+from\s+(.+?)(?:\s+(?:when|what|which)\s+(?:time|should)|[?!.]|$)',
+      caseSensitive: false,
+    ).firstMatch(routeText);
+    var route = reachFrom == null
+        ? _extractTripTimeRoute(routeText)
+        : (
+            _cleanStationQuery(reachFrom.group(2)!),
+            _cleanStationQuery(reachFrom.group(1)!),
+          );
+    if (route == null) {
+      final leaveMatch = RegExp(
+        r'\b(?:leave|start|depart)\s+(?:from\s+)?(.+?)\s+(?:to|for)\s+(.+?)(?:[?!.]|$)',
+        caseSensitive: false,
+      ).firstMatch(routeText);
+      if (leaveMatch != null) {
+        route = (
+          _cleanStationQuery(leaveMatch.group(1)!),
+          _cleanStationQuery(leaveMatch.group(2)!),
+        );
+      }
+    }
+    if (route == null || route.$1.isEmpty || route.$2.isEmpty) return null;
+    return (from: route.$1, to: route.$2, arrivalBy: arrivalBy);
   }
 
   bool _isTripTimeIntent(String raw) {
@@ -1712,6 +1847,149 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     }
   }
 
+  Future<void> _handleArrivalPlanRequest(
+    String fromTxt,
+    String toTxt,
+    DateTime arrivalBy,
+  ) async {
+    final fromMatches = _stationMatches(fromTxt);
+    final toMatches = _stationMatches(toTxt);
+    if (fromMatches.isEmpty || toMatches.isEmpty) {
+      _addBotText(
+        'I couldn’t match one of the stations. Try a station name such as KAFD or Qasr Al Hokm.',
+        'تعذر مطابقة إحدى المحطتين. جرّب اسم محطة مثل المركز المالي أو قصر الحكم.',
+        lang: _replyLang(),
+      );
+      return;
+    }
+    if (fromMatches.length > 1 || toMatches.length > 1) {
+      final options = (fromMatches.length > 1 ? fromMatches : toMatches)
+          .take(3)
+          .map((station) => _replyLang() == _Lang.ar
+              ? (station['nameAr'] ?? station['name']).toString()
+              : station['name'].toString())
+          .join(', ');
+      _addBotText(
+        'I found more than one possible station. Please use a more specific name: $options.',
+        'وجدت أكثر من محطة محتملة. يرجى استخدام اسم أكثر تحديدًا: $options.',
+        lang: _replyLang(),
+      );
+      return;
+    }
+
+    final from = fromMatches.first;
+    final to = toMatches.first;
+    final fromEn = from['name'].toString();
+    final toEn = to['name'].toString();
+    final fromAr = (from['nameAr'] ?? fromEn).toString();
+    final toAr = (to['nameAr'] ?? toEn).toString();
+    final planned = _metroTripTime.estimate(
+      fromStation: fromEn,
+      toStation: toEn,
+    );
+    if (planned == null) {
+      _addBotText(
+        'I could not find a metro route from $fromEn to $toEn.',
+        'تعذر العثور على مسار مترو من $fromAr إلى $toAr.',
+        lang: _replyLang(),
+      );
+      return;
+    }
+
+    setState(() => _busy = true);
+    try {
+      final historical = await _tripAnalytics.estimateMetroTrip(
+        fromStation: fromEn,
+        toStation: toEn,
+        expectedLineSequence: planned.lines,
+      );
+      final travelSeconds = historical?.averageSeconds ?? planned.seconds;
+      final serviceWindow = _todayWindow(arrivalBy);
+      final lines = planned.lines.isEmpty ? '-' : planned.lines.join(' → ');
+      final durationEn = _formatDuration(travelSeconds, _Lang.en);
+      final durationAr = _formatDuration(travelSeconds, _Lang.ar);
+      final arrivalEn = _formatPlanTime(arrivalBy, _Lang.en);
+      final arrivalAr = _formatPlanTime(arrivalBy, _Lang.ar);
+
+      if (!arrivalBy.isAfter(serviceWindow.$1) ||
+          !arrivalBy.isBefore(serviceWindow.$2)) {
+        _addBotText(
+          '$toEn is outside metro operating hours at $arrivalEn. Choose an arrival time between ${_formatPlanTime(serviceWindow.$1, _Lang.en)} and ${_formatPlanTime(serviceWindow.$2, _Lang.en)}.',
+          'محطة $toAr خارج ساعات تشغيل المترو عند $arrivalAr. اختر وقت وصول بين ${_formatPlanTime(serviceWindow.$1, _Lang.ar)} و${_formatPlanTime(serviceWindow.$2, _Lang.ar)}.',
+          lang: _replyLang(),
+        );
+        return;
+      }
+
+      var departure = arrivalBy.subtract(Duration(seconds: travelSeconds));
+      if (departure.isBefore(serviceWindow.$1)) {
+        departure = serviceWindow.$1;
+      }
+      final expectedArrival = departure.add(Duration(seconds: travelSeconds));
+      if (expectedArrival.isAfter(arrivalBy)) {
+        _addBotText(
+          'It is not possible to reach $toEn by $arrivalEn from $fromEn during metro hours. The earliest departure is ${_formatPlanTime(serviceWindow.$1, _Lang.en)}, with an expected arrival of ${_formatPlanTime(expectedArrival, _Lang.en)}.',
+          'لا يمكن الوصول إلى $toAr قبل $arrivalAr من $fromAr خلال ساعات تشغيل المترو. أقرب وقت للمغادرة هو ${_formatPlanTime(serviceWindow.$1, _Lang.ar)}، والوصول المتوقع ${_formatPlanTime(expectedArrival, _Lang.ar)}.',
+          lang: _replyLang(),
+        );
+        return;
+      }
+
+      if (departure.isBefore(DateTime.now())) {
+        _addBotText(
+          'To arrive at $toEn by $arrivalEn, you would need to leave $fromEn by ${_formatPlanTime(departure, _Lang.en)}. That departure time has already passed.',
+          'للوصول إلى $toAr قبل $arrivalAr، كان يجب المغادرة من $fromAr عند ${_formatPlanTime(departure, _Lang.ar)}. وقت المغادرة هذا قد مضى.',
+          lang: _replyLang(),
+        );
+        return;
+      }
+
+      final sourceEn = historical == null
+          ? 'route-planning estimate'
+          : 'average of ${historical.sampleCount} matching completed trips';
+      final sourceAr = historical == null
+          ? 'تقدير مخطط المسار'
+          : 'متوسط ${historical.sampleCount} رحلة مكتملة مطابقة';
+      await _addRecentRoute(fromEn, toEn);
+      _addBotAction(
+        textEn:
+            'To arrive at $toEn by $arrivalEn, start from $fromEn by ${_formatPlanTime(departure, _Lang.en)}. Expected travel time: $durationEn ($sourceEn). Lines: $lines.',
+        textAr:
+            'للوصول إلى $toAr قبل $arrivalAr، ابدأ من $fromAr عند ${_formatPlanTime(departure, _Lang.ar)}. مدة الرحلة المتوقعة: $durationAr ($sourceAr). الخطوط: $lines.',
+        action: _MsgAction(
+          icon: Icons.map_rounded,
+          labelEn: 'Open route on map',
+          labelAr: 'فتح المسار على الخريطة',
+          onTap: () {
+            AppBus.I.emit(RouteRequestEvent(
+              from: LatLng(from['lat'] as double, from['lng'] as double),
+              to: LatLng(to['lat'] as double, to['lng'] as double),
+            ));
+            Navigator.of(context).popUntil((route) => route.isFirst);
+          },
+        ),
+        lang: _replyLang(),
+      );
+    } catch (_) {
+      _addBotText(
+        'I could not calculate an arrival plan right now. Please try again.',
+        'تعذر حساب وقت الانطلاق الآن. حاول مرة أخرى.',
+        lang: _replyLang(),
+      );
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String _formatPlanTime(DateTime value, _Lang lang) {
+    final now = DateTime.now();
+    final showDate = value.year != now.year ||
+        value.month != now.month ||
+        value.day != now.day;
+    final pattern = showDate ? 'EEE, MMM d • h:mm a' : 'h:mm a';
+    return DateFormat(pattern, lang == _Lang.ar ? 'ar' : 'en').format(value);
+  }
+
   String _formatDuration(int seconds, _Lang lang) {
     final totalMinutes = math.max(0, (seconds / 60).round());
     if (totalMinutes < 60) {
@@ -2058,6 +2336,10 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
     final timeLike = normalized.contains('how') ||
         normalized.contains('long') ||
         normalized.contains('time') ||
+        normalized.contains('leave') ||
+        normalized.contains('start') ||
+        normalized.contains('arrive') ||
+        normalized.contains('reach') ||
         normalized.contains('average') ||
         normalized.contains('fastest') ||
         normalized.contains('quickest') ||
@@ -2068,6 +2350,10 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
         normalized.contains('كم') ||
         normalized.contains('وقت') ||
         normalized.contains('مدة') ||
+        normalized.contains('متى') ||
+        normalized.contains('للوصول') ||
+        normalized.contains('ابدا') ||
+        normalized.contains('أبدأ') ||
         normalized.contains('اسرع') ||
         normalized.contains('أسرع') ||
         normalized.contains('ابطي') ||
@@ -2081,12 +2367,14 @@ class _ChatBotScreenState extends State<ChatBotScreen> {
               'ما أسرع رحلة من المركز المالي إلى STC؟',
               'ما أطول رحلة من المركز المالي إلى STC؟',
               'قارن المسارات من المركز المالي إلى STC',
+              'متى أبدأ من المركز المالي للوصول إلى STC الساعة 8:00 مساءً؟',
             ]
           : <String>[
               'How long does it take from KAFD to STC?',
               'What is the fastest trip from KAFD to STC?',
               'What is the longest trip from KAFD to STC?',
               'Compare routes from KAFD to STC',
+              'When should I leave KAFD to arrive at STC by 8:00 PM?',
             ]),
     ];
     for (final route in _recentRoutes) {

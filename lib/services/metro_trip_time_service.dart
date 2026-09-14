@@ -146,7 +146,9 @@ class MetroTripTimeService {
     final lines = <String>[];
     for (final edge in edges) {
       final line = edge.lineKey?.trim();
-      if (line != null && line.isNotEmpty && !lines.contains(line)) {
+      if (line != null &&
+          line.isNotEmpty &&
+          (lines.isEmpty || lines.last != line)) {
         lines.add(line);
       }
     }
