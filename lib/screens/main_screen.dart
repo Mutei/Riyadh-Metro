@@ -632,6 +632,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   StreamSubscription<Position>? _navSub;
   bool _navigating = false;
   bool _endingTrip = false;
+  bool _metroTripPanelCollapsed = false;
   List<LatLng> _navPoints = [];
   Polyline? _navPolyline;
   LatLng? _navDestination;
@@ -1387,6 +1388,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     setState(() {
       _navigating = true;
+      _metroTripPanelCollapsed = false;
       _followEnabled = true;
       _offRouteStreak = 0;
       _isRerouting = false;
@@ -1551,7 +1553,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _trafficEnabled = true;
       await _renderDrivingRoute(here, nextStop.location);
     } else {
-      final options = _planRoutes(here, nextStop.location);
+      final options =
+          _planRoutes(here, nextStop.location, useEnteredOrigin: false);
       if (options.isEmpty) {
         // Keep the trip alive and use the same driving fallback as a normal
         // single-destination plan when metro service cannot connect this leg.
@@ -1562,9 +1565,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         _tripMode = _TripMode.metro;
         _trafficEnabled = false;
         final historicalTimes = await _historicalRouteTimes(options);
-        _lastRouteOptions = options;
+        final orderedOptions =
+            _orderRouteOptionsByTiming(options, historicalTimes);
+        _lastRouteOptions = orderedOptions;
         _routeHistoryByOption = historicalTimes;
-        _lastChosenRoute = options.first;
+        _lastChosenRoute = orderedOptions.first;
         _selectRouteTiming(_lastChosenRoute!);
         _selectedRouteEtaStartedAt = DateTime.now();
         _metroSeq = _lastChosenRoute!.nodeIds
@@ -1763,7 +1768,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 (near.id != plannedFirstId) || _lastChosenRoute == null;
 
             if (differentStation && _activeStopDestination != null) {
-              final newOpts = _planRoutes(near.pos, _activeStopDestination!);
+              final newOpts = _planRoutes(near.pos, _activeStopDestination!,
+                  useEnteredOrigin: false);
               if (newOpts.isNotEmpty) {
                 _lastChosenRoute = newOpts.first;
                 await _renderRouteOnMap(_lastChosenRoute!);
@@ -2400,6 +2406,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       setState(() {
         _navigating = false;
         _endingTrip = false;
+        _metroTripPanelCollapsed = false;
         _followEnabled = true;
         _navPolyline = null;
         _navPoints.clear();
@@ -2799,6 +2806,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       // Set endpoints from bot
       _userOrigin = e.from;
       _userDestination = e.to;
+      _selectedOriginLatLng = e.from;
+      _selectedDestinationLatLng = e.to;
 
       // Optional: show friendly names in the inputs
       try {
@@ -2824,9 +2833,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       if (options.isNotEmpty) {
         final historicalTimes = await _historicalRouteTimes(options);
         if (!mounted) return;
-        _lastRouteOptions = options;
+        final orderedOptions =
+            _orderRouteOptionsByTiming(options, historicalTimes);
+        _lastRouteOptions = orderedOptions;
         _routeHistoryByOption = historicalTimes;
-        _lastChosenRoute = options.first;
+        _lastChosenRoute = orderedOptions.first;
         _selectRouteTiming(_lastChosenRoute!);
         await _renderRouteOnMap(_lastChosenRoute!);
         _navDestination = e.to;
@@ -2893,6 +2904,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     // Set trip endpoints for the planner
     _userOrigin = e.from;
     _userDestination = e.to;
+    _selectedOriginLatLng = e.from;
+    _selectedDestinationLatLng = e.to;
 
     // If you keep text fields in sync, optionally fill them with nearest station names
     try {
@@ -2921,9 +2934,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   Future<List<RouteOption>> _planAndRender(LatLng from, LatLng to) async {
     // Your existing planner; adjust the call name to yours
     final opts = _planRoutes(from, to); // returns List<RouteOption>
+    var displayedOptions = opts;
     if (opts.isNotEmpty) {
-      _lastRouteOptions = opts;
-      _lastChosenRoute = opts.first;
+      final historicalTimes = await _historicalRouteTimes(opts);
+      final orderedOptions = _orderRouteOptionsByTiming(opts, historicalTimes);
+      displayedOptions = orderedOptions;
+      _lastRouteOptions = orderedOptions;
+      _routeHistoryByOption = historicalTimes;
+      _lastChosenRoute = orderedOptions.first;
       await _renderRouteOnMap(_lastChosenRoute!);
       // Drop a nice destination marker if you do that elsewhere
       _navDestination = to;
@@ -2934,7 +2952,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       await _renderDrivingRoute(from, to);
     }
     setState(() {});
-    return opts;
+    return displayedOptions;
   }
 
   /// Helper: fit camera to the drawn route (metro or car)
@@ -2987,6 +3005,36 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       }
     }
     return best?.name;
+  }
+
+  String _stationNameKey(String value) => value
+      .toLowerCase()
+      .replaceAll(RegExp(r'\bstation\b'), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+
+  /// The From field is authoritative for metro-station journeys. Keep every
+  /// platform node for the named physical station so interchanges still work,
+  /// but never replace it with a nearby station based on GPS/place coordinates.
+  List<StationNode> _enteredOriginStations() {
+    final selectedName = _stationNameKey(_originCtrl.text);
+    if (selectedName.isEmpty) return const [];
+
+    String? stationName;
+    for (final node in _graph.stationList) {
+      final nodeName = _stationNameKey(node.name);
+      if (selectedName == nodeName ||
+          selectedName.contains(nodeName) ||
+          nodeName.contains(selectedName)) {
+        stationName = nodeName;
+        break;
+      }
+    }
+    if (stationName == null) return const [];
+
+    return _graph.stationList
+        .where((node) => _stationNameKey(node.name) == stationName)
+        .toList();
   }
 
   Future<bool> _guardMetroHours() async {
@@ -3115,6 +3163,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final camera = CameraPosition(target: target, zoom: 15.0);
 
       _userOrigin = target;
+      _selectedOriginLatLng = null;
       if (mounted) {
         final label = await _labelForLatLng(target);
         _originCtrl.text = label;
@@ -3182,6 +3231,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     if (_active == _ActiveField.origin) {
       _userOrigin = ll;
+      _selectedOriginLatLng = ll;
       _originCtrl.text = s.title;
       await _tryRouteIfBothReady();
     } else {
@@ -3200,6 +3250,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final ll = LatLng(f.lat, f.lng);
     if (_active == _ActiveField.origin) {
       _userOrigin = ll;
+      _selectedOriginLatLng = null;
       _originCtrl.text = f.label;
       await _tryRouteIfBothReady();
     } else {
@@ -3228,6 +3279,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final res = await _places.textSearchFirst(query: q, near: bias);
     if (res.latLng != null) {
       _userOrigin = res.latLng;
+      _selectedOriginLatLng = res.latLng;
       _originCtrl.text = res.label ?? q;
       await _tryRouteIfBothReady();
     }
@@ -3309,6 +3361,24 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _selectedRouteEtaStartedAt = null;
   }
 
+  List<RouteOption> _orderRouteOptionsByTiming(
+    List<RouteOption> options,
+    Map<RouteOption, TripTimeEstimate> historicalTimes,
+  ) {
+    final ordered = List<RouteOption>.from(options);
+    ordered.sort((a, b) {
+      final recordedA = historicalTimes[a]?.averageSeconds;
+      final recordedB = historicalTimes[b]?.averageSeconds;
+      if (recordedA != null && recordedB != null) {
+        return recordedA.compareTo(recordedB);
+      }
+      if (recordedA != null) return -1;
+      if (recordedB != null) return 1;
+      return a.totalSeconds.compareTo(b.totalSeconds);
+    });
+    return ordered;
+  }
+
   Future<void> _tryRouteIfBothReady() async {
     await _collapseSheetForRoute(size: 0.24);
 
@@ -3350,7 +3420,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     final historicalTimes = await _historicalRouteTimes(options);
     if (!mounted) return;
-    _lastRouteOptions = options;
+    final orderedOptions = _orderRouteOptionsByTiming(options, historicalTimes);
+    _lastRouteOptions = orderedOptions;
     _routeHistoryByOption = historicalTimes;
     if (_intermediateStops.isEmpty) _lastDestLabel = planningStop.label;
 
@@ -3361,7 +3432,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
       builder: (ctx) => RouteOptionsSheet(
-        options: options,
+        options: orderedOptions,
         historicalTimes: historicalTimes,
         destLabel: planningStop.label,
         cap: _cap,
@@ -3667,7 +3738,11 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   }
 
   // ===== METRO plan/render =====
-  List<RouteOption> _planRoutes(LatLng originLL, LatLng destLL) {
+  List<RouteOption> _planRoutes(
+    LatLng originLL,
+    LatLng destLL, {
+    bool useEnteredOrigin = true,
+  }) {
     const srcId = 'SRC';
     const dstId = 'DST';
     const maxRoutes = 5;
@@ -3676,20 +3751,32 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       for (final entry in _graph.baseAdj.entries)
         entry.key: List<GEdge>.from(entry.value),
     };
+    final enteredOriginStations =
+        useEnteredOrigin ? _enteredOriginStations() : const <StationNode>[];
     final origins = _graph.kNearestStations(originLL,
         MetroGraph.originDestCandidates, MetroGraph.maxOriginDestLinkMeters);
     final dests = _graph.kNearestStations(destLL,
         MetroGraph.originDestCandidates, MetroGraph.maxOriginDestLinkMeters);
-    if (origins.isEmpty || dests.isEmpty) return [];
+    if ((enteredOriginStations.isEmpty && origins.isEmpty) || dests.isEmpty) {
+      return [];
+    }
 
     baseAdj[srcId] = [
-      for (final origin in origins)
+      for (final origin in enteredOriginStations)
         GEdge(
-          to: origin.node.id,
-          seconds: origin.meters / MetroGraph.walkSpeedMps,
+          to: origin.id,
+          seconds: 0,
           kind: 'walk',
-          meters: origin.meters,
+          meters: 0,
         ),
+      if (enteredOriginStations.isEmpty)
+        for (final origin in origins)
+          GEdge(
+            to: origin.node.id,
+            seconds: origin.meters / MetroGraph.walkSpeedMps,
+            kind: 'walk',
+            meters: origin.meters,
+          ),
     ];
     baseAdj[dstId] = [];
     for (final destination in dests) {
@@ -3744,41 +3831,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       );
     }
 
-    List<String> guideCheckpoints(RouteOption route) {
-      final checkpoints = <String>[];
-      void addCheckpoint(String nodeId) {
-        final stationName = route.nodes[nodeId]?.name.trim() ?? '';
-        if (stationName.isEmpty ||
-            (checkpoints.isNotEmpty &&
-                checkpoints.last.toLowerCase() == stationName.toLowerCase())) {
-          return;
-        }
-        checkpoints.add(stationName);
-      }
-
-      String? previousLine;
-      String? lastMetroDestination;
-      for (var index = 0; index < route.edgesInOrder.length; index++) {
-        final edge = route.edgesInOrder[index];
-        if (edge.kind != 'metro') continue;
-        if (previousLine == null || previousLine != edge.lineKey) {
-          addCheckpoint(route.nodeIds[index]);
-        }
-        previousLine = edge.lineKey;
-        lastMetroDestination = route.nodeIds[index + 1];
-      }
-      if (lastMetroDestination != null) addCheckpoint(lastMetroDestination);
-      return checkpoints;
-    }
-
-    String normalizeCheckpoint(String value) =>
-        value.toLowerCase().replaceAll(RegExp(r'\s+'), ' ').trim();
-
-    // Internal node IDs may represent separate platforms at the same physical
-    // station. Deduplicate by the journey a passenger actually sees instead.
-    String routeSignature(RouteOption route) =>
-        '${route.lineSequence.join('>')}|'
-        '${guideCheckpoints(route).map(normalizeCheckpoint).join('>')}';
+    // Moving between transfer stations while using the same ordered metro lines
+    // is not a distinct guide for this screen. Keep one representative for each
+    // line configuration and continue searching for genuinely different lines.
+    String routeSignature(RouteOption route) => route.lineSequence.join('>');
 
     // Each candidate excludes one already-used graph edge, so every displayed
     // guide is a real alternative produced by the existing metro graph.
@@ -3789,7 +3845,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     var candidateIndex = 0;
 
     while (candidateIndex < pendingBans.length &&
-        candidateIndex < 48 &&
+        candidateIndex < 120 &&
         routeResults.length < maxRoutes) {
       final banned = pendingBans[candidateIndex++];
       final adjacency = copyAdjacency();
@@ -3801,16 +3857,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       final result = _graph.dijkstra(srcId, dstId, adjacency);
       if (result == null) continue;
       final option = buildOption(result);
-      if (!routeSignatures.add(routeSignature(option))) continue;
-      routeResults.add(option);
+      if (routeSignatures.add(routeSignature(option))) {
+        routeResults.add(option);
+      }
 
       for (var index = 0; index < option.edgesInOrder.length; index++) {
         final edge = option.edgesInOrder[index];
         final from = option.nodeIds[index];
-        final canVary = edge.kind == 'metro' ||
-            edge.kind == 'transfer' ||
-            from == srcId ||
-            edge.to == dstId;
+        final canVary = edge.kind == 'metro' || edge.kind == 'transfer';
         if (!canVary) continue;
 
         final nextBanned = {...banned, edgeKey(from, edge)};
@@ -4193,10 +4247,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final Map<String, dynamic>? choice =
         await showModalBottomSheet<Map<String, dynamic>>(
       context: context,
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).colorScheme.surface,
       shape: const RoundedRectangleBorder(
           borderRadius: BorderRadius.vertical(top: Radius.circular(18))),
-      builder: (context) {
+      builder: (sheetContext) {
+        final theme = Theme.of(sheetContext);
+        final colors = theme.colorScheme;
         final current = _selectedLineKey;
         return SafeArea(
           child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -4205,7 +4261,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 width: 42,
                 height: 4,
                 decoration: BoxDecoration(
-                    color: Colors.black12,
+                    color: colors.onSurface.withOpacity(0.24),
                     borderRadius: BorderRadius.circular(100))),
             const SizedBox(height: 12),
             Padding(
@@ -4213,8 +4269,10 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(getTranslated(context, 'Choose a metro line'),
-                    style: const TextStyle(
-                        fontSize: 16, fontWeight: FontWeight.w700)),
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                      color: colors.onSurface,
+                    )),
               ),
             ),
             const SizedBox(height: 6),
@@ -4222,19 +4280,23 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               child: ListView.separated(
                 shrinkWrap: true,
                 itemCount: entries.length,
-                separatorBuilder: (_, __) => const Divider(height: 1),
+                separatorBuilder: (_, __) =>
+                    Divider(height: 1, color: colors.outlineVariant),
                 itemBuilder: (_, i) {
                   final e = entries[i];
                   final String? key = e['key'];
                   final bool selected =
                       key == current || (key == null && current == null);
-                  final Color dot = (e['color'] as Color?) ?? Colors.black87;
+                  final Color dot = (e['color'] as Color?) ?? colors.onSurface;
                   return ListTile(
                     leading: CircleAvatar(backgroundColor: dot, radius: 12),
                     title: Text(e['name'] as String,
-                        style: const TextStyle(fontWeight: FontWeight.w600)),
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: colors.onSurface,
+                        )),
                     trailing: selected
-                        ? const Icon(Icons.check_circle, color: Colors.green)
+                        ? Icon(Icons.check_circle, color: colors.primary)
                         : null,
                     onTap: () => Navigator.of(context).pop(e),
                   );
@@ -4392,6 +4454,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   Future<void> _setOriginHere() async {
     _userOrigin = _lastCameraTarget;
+    _selectedOriginLatLng = null;
     final label = await _labelForLatLng(_lastCameraTarget);
     _originCtrl.text = label;
     _notify(getTranslated(context, 'Origin set to map center.'));
@@ -5160,6 +5223,93 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                           'Change to ${_cap(_transferToLineKey!)} line at $nextStationLabel',
                           'غيّر إلى الخط ${_cap(_transferToLineKey!)} في $nextStationLabel',
                         );
+                  final speedMps = _navSpeedMps.isFinite && _navSpeedMps > .2
+                      ? _navSpeedMps
+                      : _lastFixSpeed;
+                  final speedText = speedMps.isFinite
+                      ? '${(math.max(0.0, speedMps) * 3.6).toStringAsFixed(0)} km/h'
+                      : '– km/h';
+
+                  if (_metroTripPanelCollapsed) {
+                    return InkWell(
+                      borderRadius: BorderRadius.circular(20),
+                      onTap: () =>
+                          setState(() => _metroTripPanelCollapsed = false),
+                      child: Container(
+                        margin: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 12, vertical: 10),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [
+                              panelPrimary,
+                              Color.lerp(
+                                  panelPrimary, const Color(0xFF061A13), .7)!,
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                              color: Colors.white.withValues(alpha: .16)),
+                          boxShadow: [
+                            BoxShadow(
+                              blurRadius: 14,
+                              color: panelPrimary.withValues(alpha: .36),
+                              offset: const Offset(0, 6),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          children: [
+                            Container(
+                              width: 34,
+                              height: 34,
+                              decoration: BoxDecoration(
+                                color: Colors.white.withValues(alpha: .16),
+                                borderRadius: BorderRadius.circular(11),
+                              ),
+                              child: const Icon(
+                                Icons.directions_subway_rounded,
+                                color: Colors.white,
+                                size: 20,
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '${getTranslated(context, 'Next station')}: $nextStationLabel',
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.w800,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    '${_fmtClock(etaT)} • $speedText',
+                                    style: TextStyle(
+                                      color:
+                                          Colors.white.withValues(alpha: .76),
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Icon(Icons.expand_more_rounded,
+                                color: Colors.white.withValues(alpha: .9)),
+                          ],
+                        ),
+                      ),
+                    );
+                  }
 
                   // Small helper pill
                   Widget _pill(IconData icon, String text, {Color? fg}) =>
@@ -5286,6 +5436,30 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     ),
                                   ),
                                 ],
+                              ),
+                            ),
+                            const SizedBox(width: 6),
+                            Tooltip(
+                              message: _tripText(
+                                'Minimize trip information',
+                                'تصغير معلومات الرحلة',
+                              ),
+                              child: InkWell(
+                                borderRadius: BorderRadius.circular(12),
+                                onTap: () => setState(
+                                    () => _metroTripPanelCollapsed = true),
+                                child: Container(
+                                  width: 34,
+                                  height: 34,
+                                  decoration: BoxDecoration(
+                                    color: Colors.black.withValues(alpha: .16),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: const Icon(
+                                    Icons.expand_less_rounded,
+                                    color: Colors.white,
+                                  ),
+                                ),
                               ),
                             ),
                           ],
@@ -5428,6 +5602,19 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                   fontSize: 12,
                                   fontWeight: FontWeight.w600,
                                 ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Icon(Icons.speed_rounded,
+                                color: Colors.white.withValues(alpha: .78),
+                                size: 16),
+                            const SizedBox(width: 5),
+                            Text(
+                              speedText,
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: .82),
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
                               ),
                             ),
                           ],

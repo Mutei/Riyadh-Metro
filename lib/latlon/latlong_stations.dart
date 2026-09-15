@@ -230,8 +230,8 @@ const List<Map<String, dynamic>> blueStations = [
   {
     'name': 'SAB Bank',
     'nameAr': 'بنك الأول',
-    'lat': 24.830277742664208,
-    'lng': 46.61566205359704
+    'lat': 24.829377094280332,
+    'lng': 46.61611802619849
   },
   {
     'name': 'Dr Sulaiman Al Habib',
