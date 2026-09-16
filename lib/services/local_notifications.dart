@@ -193,6 +193,7 @@ class AppLocalNotifications {
     required String body,
     Color? accentColor,
     int? progress,
+    List<String> detailLines = const [],
   }) async {
     await init();
     final normalizedProgress = progress?.clamp(0, 100).toInt();
@@ -212,11 +213,17 @@ class AppLocalNotifications {
       showProgress: normalizedProgress != null,
       maxProgress: 100,
       progress: normalizedProgress ?? 0,
-      styleInformation: BigTextStyleInformation(
-        body,
-        contentTitle: title,
-        summaryText: 'Darb active trip',
-      ),
+      styleInformation: detailLines.isEmpty
+          ? BigTextStyleInformation(
+              body,
+              contentTitle: title,
+              summaryText: 'Darb active trip',
+            )
+          : InboxStyleInformation(
+              detailLines,
+              contentTitle: title,
+              summaryText: 'Darb active trip',
+            ),
     );
     const ios = DarwinNotificationDetails(
       presentAlert: true,
@@ -240,6 +247,13 @@ class AppLocalNotifications {
     await init();
     await Future.wait(_activeTripNotificationIds.map(_plugin.cancel));
     _activeTripNotificationIds.clear();
+  }
+
+  static Future<void> clearTripEvent(String eventKey) async {
+    await init();
+    final id = _tripNotificationId(eventKey);
+    _activeTripNotificationIds.remove(id);
+    await _plugin.cancel(id);
   }
 
   static int _tripNotificationId(String key) {

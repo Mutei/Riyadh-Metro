@@ -135,6 +135,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       const TripNotificationSettings();
   String? _activeSegmentId; // NEW: current metro segment push key
   DateTime? _segmentStartTime; // NEW: when the current metro segment started
+  static const double _transferAutoContinueDistanceMeters = 150;
+  bool _awaitingTransferContinuation = false;
+  bool _continuingTransfer = false;
+  DateTime? _transferArrivedAt;
+  LatLng? _transferArrivalPoint;
+  String? _transferStationName;
+  String? _transferFromLineKey;
+  String? _transferSegmentLineKey;
 
   // Put near your other fields
   static const String _darkMapStyleJson = r'''
@@ -713,18 +721,44 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final eta = TimeOfDay.fromDateTime(
       now.add(Duration(seconds: (_etaSecondsForUI() as num).round())),
     ).format(context);
-    final String title = _tripText('Trip in progress', 'الرحلة قيد التقدم');
+    final String title = _tripText('Darb · Active trip', 'درب · رحلة نشطة');
     final String body;
+    final List<String> detailLines;
     Color? lineColor;
     int? progress;
 
-    if (_firstMileToStation && _firstStationName != null) {
+    if (_awaitingTransferContinuation &&
+        _transferStationName != null &&
+        _transferSegmentLineKey != null) {
+      final station = _transferStationName!;
+      final nextLine = _cap(_transferSegmentLineKey!);
+      body = _tripText(
+        'Transfer at $station · Continue on $nextLine Line',
+        'تحويل في $station · تابع على خط $nextLine',
+      );
+      detailLines = [
+        _tripText('Transfer station: $station', 'محطة التحويل: $station'),
+        _tripText('Next line: $nextLine Line', 'الخط التالي: $nextLine'),
+        _tripText('Open Darb and tap Continue Trip when ready.',
+            'افتح درب واضغط متابعة الرحلة عند الاستعداد.'),
+      ];
+      lineColor = metroLineColors[_transferSegmentLineKey!];
+      if (_metroSeq.length >= 2) {
+        progress = ((_metroLeg / (_metroSeq.length - 1)) * 100).round();
+      }
+    } else if (_firstMileToStation && _firstStationName != null) {
       final line =
           _firstStationLineKey == null ? '' : ' ${_cap(_firstStationLineKey!)}';
       body = _tripText(
-        'Head to $_firstStationName to board the${line.isEmpty ? '' : line} Line. ETA $eta.',
-        'اتجه إلى $_firstStationName للصعود إلى${line.isEmpty ? '' : ' الخط$line'}. الوصول المتوقع $eta.',
+        'Board at $_firstStationName · ETA $eta',
+        'اصعد من $_firstStationName · الوصول $eta',
       );
+      detailLines = [
+        _tripText(
+            'Board the${line.isEmpty ? '' : line} Line at $_firstStationName.',
+            'اصعد إلى${line.isEmpty ? '' : ' الخط$line'} في $_firstStationName.'),
+        _tripText('Estimated arrival: $eta', 'الوصول المتوقع: $eta'),
+      ];
       lineColor = _firstStationLineKey == null
           ? null
           : metroLineColors[_firstStationLineKey!];
@@ -741,9 +775,27 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               'تحويل في ${next.name} إلى الخط ${_cap(transferLine)}',
             );
       body = _tripText(
-        '$instruction · $remainingStops stations remaining · ETA $eta',
-        '$instruction · متبقي $remainingStops محطات · الوصول المتوقع $eta',
+        '$instruction · $remainingStops stops · ETA $eta',
+        '$instruction · متبقي $remainingStops محطات · الوصول $eta',
       );
+      final destination = _tripDestLabel?.trim().isNotEmpty == true
+          ? _tripDestLabel!
+          : (_lastDestLabel ?? _metroSeq.last.name);
+      detailLines = [
+        _tripText('Destination: $destination', 'الوجهة: $destination'),
+        transferLine == null
+            ? _tripText(
+                'Next station: ${next.name}', 'المحطة التالية: ${next.name}')
+            : _tripText(
+                'Transfer at ${next.name} to ${_cap(transferLine)} Line',
+                'تحويل في ${next.name} إلى الخط ${_cap(transferLine)}',
+              ),
+        _tripText(
+          '${_cap(currentLine)} Line · $remainingStops stations remaining',
+          'خط ${_cap(currentLine)} · متبقي $remainingStops محطات',
+        ),
+        _tripText('Estimated arrival: $eta', 'الوصول المتوقع: $eta'),
+      ];
       lineColor = metroLineColors[currentLine];
       progress = ((currentLeg / (_metroSeq.length - 1)) * 100).round();
     } else {
@@ -753,9 +805,14 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         '$instruction · ETA $eta',
         '$instruction · الوصول المتوقع $eta',
       );
+      detailLines = [
+        instruction,
+        _tripText('Estimated arrival: $eta', 'الوصول المتوقع: $eta'),
+      ];
     }
 
-    final contentKey = '$title|$body|${progress ?? -1}';
+    final contentKey =
+        '$title|$body|${detailLines.join('|')}|${progress ?? -1}';
     final lastUpdate = _lastOngoingTripNotificationAt;
     if (!force &&
         contentKey == _lastOngoingTripNotificationContent &&
@@ -771,6 +828,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       body: body,
       accentColor: lineColor,
       progress: progress,
+      detailLines: detailLines,
     ));
   }
 
@@ -1395,6 +1453,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       // reset metro segment bookkeeping
       _activeSegmentId = null;
       _segmentStartTime = null;
+      _awaitingTransferContinuation = false;
+      _continuingTransfer = false;
+      _transferArrivedAt = null;
+      _transferArrivalPoint = null;
+      _transferStationName = null;
+      _transferFromLineKey = null;
+      _transferSegmentLineKey = null;
     });
 
     // ---------- Metro setup & first-mile override to the first station ----------
@@ -1616,6 +1681,128 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final hasMoreStops = await _advanceToNextTripStop(here);
     if (hasMoreStops) return;
     await _endTrip();
+  }
+
+  Future<void> _pauseAtTransfer({
+    required StationNode arrivedStation,
+    required StationNode departingStation,
+    required DateTime arrivedAt,
+  }) async {
+    if (_awaitingTransferContinuation || _continuingTransfer) return;
+
+    _awaitingTransferContinuation = true;
+    _transferArrivedAt = arrivedAt;
+    _transferArrivalPoint = arrivedStation.pos;
+    _transferStationName = arrivedStation.name;
+    _transferFromLineKey = arrivedStation.lineKey;
+    _transferSegmentLineKey = departingStation.lineKey;
+
+    if (mounted) {
+      setState(() => _metroTripPanelCollapsed = false);
+    }
+    _updateOngoingTripNotification(force: true);
+    _sendTripAlert(
+      key: 'active_transfer_guidance',
+      title: _tripText('Change lines at ${arrivedStation.name}',
+          'غيّر الخط في ${arrivedStation.name}'),
+      body: _tripText(
+        'Move to the ${_cap(departingStation.lineKey)} Line, then tap Continue Trip.',
+        'انتقل إلى الخط ${_cap(departingStation.lineKey)} ثم اضغط متابعة الرحلة.',
+      ),
+      kind: _TripAlertKind.transfer,
+      priority: TripNotificationPriority.important,
+      hintType: NavHintType.transfer,
+      lineColor: metroLineColors[departingStation.lineKey],
+    );
+  }
+
+  Future<void> _continueTripAfterTransfer({bool automatic = false}) async {
+    if (!_awaitingTransferContinuation || _continuingTransfer) return;
+    if (_metroLeg >= _metroSeq.length - 1) return;
+
+    final transferStartedAt = _transferArrivedAt;
+    final transferStation = _transferStationName;
+    final fromLine = _transferFromLineKey;
+    final toLine = _transferSegmentLineKey;
+    if (transferStartedAt == null ||
+        transferStation == null ||
+        fromLine == null ||
+        toLine == null) {
+      return;
+    }
+
+    _continuingTransfer = true;
+    final continuedAt = DateTime.now();
+    try {
+      if (_activeTripId != null) {
+        await _travelSvc.addMetroTransfer(
+          entryId: _activeTripId!,
+          station: transferStation,
+          fromLineKey: fromLine,
+          toLineKey: toLine,
+          seconds:
+              math.max(0, continuedAt.difference(transferStartedAt).inSeconds),
+          startedAt: transferStartedAt,
+          finishedAt: continuedAt,
+        );
+
+        final current = _metroSeq[_metroLeg];
+        final next = _metroSeq[_metroLeg + 1];
+        _segmentStartTime = continuedAt;
+        _activeSegmentId = await _travelSvc.startMetroSegment(
+          entryId: _activeTripId!,
+          fromStation: current.name,
+          toStation: next.name,
+          lineKey: current.lineKey,
+          startedAt: continuedAt,
+        );
+      }
+
+      _awaitingTransferContinuation = false;
+      _transferArrivedAt = null;
+      _transferArrivalPoint = null;
+      _transferStationName = null;
+      _transferFromLineKey = null;
+      _transferSegmentLineKey = null;
+      unawaited(
+          AppLocalNotifications.clearTripEvent('active_transfer_guidance'));
+      _updateOngoingTripNotification(force: true);
+      if (automatic) {
+        _sendTripAlert(
+          key:
+              'transfer_auto_continue_${_activeTripId ?? continuedAt.millisecondsSinceEpoch}_${_metroLeg}',
+          title: _tripText('Trip continued', 'تمت متابعة الرحلة'),
+          body: _tripText(
+            'Movement away from the transfer station was detected.',
+            'تم اكتشاف مغادرة محطة التحويل.',
+          ),
+          kind: _TripAlertKind.progress,
+          priority: TripNotificationPriority.progress,
+          hintType: NavHintType.board,
+        );
+      }
+    } finally {
+      _continuingTransfer = false;
+      if (mounted) setState(() {});
+    }
+  }
+
+  Future<void> _maybeAutomaticallyContinueTransfer(
+      LatLng currentPosition) async {
+    if (!_awaitingTransferContinuation ||
+        _continuingTransfer ||
+        _transferArrivalPoint == null) {
+      return;
+    }
+    final distance = Geolocator.distanceBetween(
+      currentPosition.latitude,
+      currentPosition.longitude,
+      _transferArrivalPoint!.latitude,
+      _transferArrivalPoint!.longitude,
+    );
+    if (distance >= _transferAutoContinueDistanceMeters) {
+      await _continueTripAfterTransfer(automatic: true);
+    }
   }
 
   void _attachNavStream() {
@@ -1869,6 +2056,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         );
       }
 
+      // Manual continuation is preferred at an interchange. A real location
+      // fix more than 150 m from that station is the fallback for riders who
+      // continue without touching the button.
+      if (_tripMode == _TripMode.metro && isRealFix && metroAccept) {
+        await _maybeAutomaticallyContinueTransfer(uiPos);
+      }
+
       // Car step advancement
       if (isRealFix && _tripMode == _TripMode.drive) _maybeAdvanceStep(here);
 
@@ -1954,8 +2148,22 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           _nearNextSince = null;
           _nextMinDist = double.infinity;
 
-          // Start the following segment if there is one
-          if (_metroLeg < _metroSeq.length - 1 &&
+          // A line change separates two train segments. Wait for the rider to
+          // confirm boarding the next line (or leave the station) before the
+          // outgoing segment begins, so transfer time is not folded into it.
+          final bool hasTransferAhead = _metroLeg < _metroSeq.length - 1 &&
+              _metroSeq[_metroLeg].lineKey != _metroSeq[_metroLeg + 1].lineKey;
+          if (hasTransferAhead) {
+            final transferArrivalStation = _metroSeq[_metroLeg];
+            // Skip the graph's internal platform-change node so the next
+            // persisted segment begins at the outgoing line's platform.
+            _metroLeg++;
+            await _pauseAtTransfer(
+              arrivedStation: transferArrivalStation,
+              departingStation: _metroSeq[_metroLeg],
+              arrivedAt: now,
+            );
+          } else if (_metroLeg < _metroSeq.length - 1 &&
               _activeTripId != null &&
               _metroSeq.length >= 2) {
             final StationNode curr = _metroSeq[_metroLeg];
@@ -2351,6 +2559,18 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _predictTimer?.cancel();
       _predictTimer = null;
 
+      // Remove all active-trip cards immediately. Persisting trip history may
+      // take a moment, but the user should never see an active journey after
+      // choosing End trip or reaching the destination.
+      try {
+        await AppLocalNotifications.clearTripEvents();
+        await AppLocalNotifications.clearOngoingTripStatus();
+      } catch (error) {
+        debugPrint('Trip notification cleanup failed: $error');
+      }
+      _lastOngoingTripNotificationAt = null;
+      _lastOngoingTripNotificationContent = null;
+
       if (completedTripId != null && startedAt != null) {
         final duration = endedAt.difference(startedAt).inSeconds;
         final openSegmentSeconds = openSegmentStartedAt == null
@@ -2374,32 +2594,6 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         } catch (error) {
           debugPrint('Trip history finalization failed: $error');
         }
-      }
-
-      // Keep only the completion summary; all earlier prompts belong to the
-      // completed journey and should no longer be actionable.
-      try {
-        await AppLocalNotifications.clearTripEvents();
-        await AppLocalNotifications.clearOngoingTripStatus();
-      } catch (error) {
-        debugPrint('Trip notification cleanup failed: $error');
-      }
-      _lastOngoingTripNotificationAt = null;
-      _lastOngoingTripNotificationContent = null;
-      if (startedAt != null) {
-        final minutes = math.max(1, endedAt.difference(startedAt).inMinutes);
-        _sendTripAlert(
-          key:
-              'trip_completed_${completedTripId ?? startedAt.millisecondsSinceEpoch}',
-          title: _tripText('Trip completed', 'اكتملت الرحلة'),
-          body: _tripText(
-            'Actual travel time: $minutes min.',
-            'المدة الفعلية للرحلة: $minutes دقيقة.',
-          ),
-          kind: _TripAlertKind.completed,
-          priority: TripNotificationPriority.progress,
-          hintType: NavHintType.alight,
-        );
       }
     } finally {
       if (!mounted) return;
@@ -2441,6 +2635,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         // Segment bookkeeping
         _activeSegmentId = null;
         _segmentStartTime = null;
+        _awaitingTransferContinuation = false;
+        _continuingTransfer = false;
+        _transferArrivedAt = null;
+        _transferArrivalPoint = null;
+        _transferStationName = null;
+        _transferFromLineKey = null;
+        _transferSegmentLineKey = null;
       });
     }
   }
@@ -5536,6 +5737,41 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                             ],
                           ),
                         ),
+                        if (_awaitingTransferContinuation)
+                          Padding(
+                            padding: const EdgeInsets.only(top: 12),
+                            child: SizedBox(
+                              width: double.infinity,
+                              child: FilledButton.icon(
+                                onPressed: _continuingTransfer
+                                    ? null
+                                    : () => _continueTripAfterTransfer(),
+                                icon: _continuingTransfer
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                          color: Colors.white,
+                                        ),
+                                      )
+                                    : const Icon(Icons.play_arrow_rounded),
+                                label: Text(_tripText(
+                                  'Continue trip on ${_cap(_transferSegmentLineKey ?? '')} Line',
+                                  'متابعة الرحلة على خط ${_cap(_transferSegmentLineKey ?? '')}',
+                                )),
+                                style: FilledButton.styleFrom(
+                                  backgroundColor: Colors.white,
+                                  foregroundColor: panelPrimary,
+                                  padding:
+                                      const EdgeInsets.symmetric(vertical: 13),
+                                  textStyle: const TextStyle(
+                                    fontWeight: FontWeight.w800,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
                         const SizedBox(height: 13),
                         Row(
                           children: [

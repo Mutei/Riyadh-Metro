@@ -184,15 +184,25 @@ class TripAnalyticsService {
     required String toStation,
     List<String>? expectedLineSequence,
   }) {
-    final originTimes = <int>[];
+    final originSegmentStarts = <int>[];
+    final originArrivalTimes = <int>[];
     final destinationTimes = <int>[];
     for (final segment in segments) {
       final segmentFrom = _normalize(segment.fromStation);
       final segmentTo = _normalize(segment.toStation);
-      if (segmentFrom == fromStation) originTimes.add(segment.startedAt);
-      if (segmentTo == fromStation) originTimes.add(segment.finishedAt);
+      if (segmentFrom == fromStation) {
+        originSegmentStarts.add(segment.startedAt);
+      }
+      if (segmentTo == fromStation) originArrivalTimes.add(segment.finishedAt);
       if (segmentTo == toStation) destinationTimes.add(segment.finishedAt);
     }
+    // At a transfer, the incoming segment's finish marks arrival on the
+    // platform while the outgoing segment's start marks actual continuation.
+    // Prefer that real outbound start when it exists; older records can still
+    // fall back to an arrival timestamp.
+    final originTimes = originSegmentStarts.isNotEmpty
+        ? originSegmentStarts
+        : originArrivalTimes;
     originTimes.sort();
     destinationTimes.sort();
 

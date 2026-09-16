@@ -27,7 +27,7 @@ Map<Object?, Object?> _completedTrip(Map<Object?, Object?> segments) =>
     };
 
 void main() {
-  test('uses intermediate station timestamps and includes a transfer wait', () {
+  test('uses the outbound segment start when a query begins at a transfer', () {
     final trip = _completedTrip(<Object?, Object?>{
       'a': _segment(
         from: 'KAFD',
@@ -52,11 +52,40 @@ void main() {
     );
 
     expect(estimate, isNotNull);
-    expect(estimate!.averageSeconds, 8);
-    expect(estimate.minimumSeconds, 8);
-    expect(estimate.maximumSeconds, 8);
+    expect(estimate!.averageSeconds, 5);
+    expect(estimate.minimumSeconds, 5);
+    expect(estimate.maximumSeconds, 5);
     expect(estimate.sampleCount, 1);
     expect(estimate.commonLines, ['red']);
+  });
+
+  test('keeps the recorded transfer interval in a complete journey', () {
+    final trip = _completedTrip(<Object?, Object?>{
+      'a': _segment(
+        from: 'SABIC',
+        to: 'KAFD',
+        line: 'yellow',
+        startedAt: 1000,
+        finishedAt: 5000,
+      ),
+      'b': _segment(
+        from: 'KAFD',
+        to: 'STC',
+        line: 'blue',
+        startedAt: 8000,
+        finishedAt: 13000,
+      ),
+    });
+
+    final estimate = TripAnalyticsService.estimateFromRecordedTrips(
+      trips: [trip],
+      fromStation: 'SABIC',
+      toStation: 'STC',
+    );
+
+    expect(estimate, isNotNull);
+    expect(estimate!.averageSeconds, 12);
+    expect(estimate.commonLines, ['blue', 'yellow']);
   });
 
   test('aggregates valid actual observations and rejects reverse direction',
