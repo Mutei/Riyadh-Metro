@@ -1,4 +1,5 @@
 // lib/screens/ticket_screen.dart
+import 'dart:async';
 import 'dart:ui' show FontFeature; // for tabular figures in remaining time
 
 import 'package:flutter/material.dart';
@@ -7,8 +8,10 @@ import 'package:firebase_database/firebase_database.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 import '../constants/colors.dart';
+import '../services/bus_on_demand_service.dart';
 import '../widgets/bottom_navigation_bar.dart';
 import '../localization/language_constants.dart';
+import 'bus_on_demand_booking_screen.dart';
 
 enum TicketClass { regular, firstClass }
 
@@ -41,6 +44,13 @@ class TicketRecord {
 
   final bool activated;
   final bool expired;
+  final String? bookingId;
+  final String? busBookingStatus;
+  final String? busDirection;
+  final String? stationName;
+  final String? locationLabel;
+  final DateTime? scheduledPickup;
+  final bool metroIncluded;
 
   final DateTime? purchasedAt;
   final DateTime? activatedAt;
@@ -57,6 +67,13 @@ class TicketRecord {
     required this.expiresAtStr,
     required this.activated,
     required this.expired,
+    required this.bookingId,
+    required this.busBookingStatus,
+    required this.busDirection,
+    required this.stationName,
+    required this.locationLabel,
+    required this.scheduledPickup,
+    required this.metroIncluded,
     required this.purchasedAt,
     required this.activatedAt,
     required this.expiresAt,
@@ -65,6 +82,11 @@ class TicketRecord {
   static String _s(dynamic v) => v is String ? v : '';
   static int _i(dynamic v) => v is num ? v.toInt() : 0;
   static bool _b(dynamic v) => v == true;
+  static DateTime? _millis(dynamic value) {
+    return value is num
+        ? DateTime.fromMillisecondsSinceEpoch(value.toInt())
+        : null;
+  }
 
   static DateTime? _parseDate(String? s) {
     if (s == null || s.isEmpty) return null;
@@ -129,6 +151,16 @@ class TicketRecord {
       expiresAtStr: expiresStr,
       activated: _b(m['activated']),
       expired: _b(m['expired']),
+      bookingId: _s(m['bookingId']).isEmpty ? null : _s(m['bookingId']),
+      busBookingStatus:
+          _s(m['busBookingStatus']).isEmpty ? null : _s(m['busBookingStatus']),
+      busDirection:
+          _s(m['busDirection']).isEmpty ? null : _s(m['busDirection']),
+      stationName: _s(m['stationName']).isEmpty ? null : _s(m['stationName']),
+      locationLabel:
+          _s(m['locationLabel']).isEmpty ? null : _s(m['locationLabel']),
+      scheduledPickup: _millis(m['scheduledPickupMillis']),
+      metroIncluded: _b(m['metroIncluded']),
       purchasedAt: purchasedParsed,
       activatedAt: activatedAt,
       expiresAt: expiresAt,
@@ -151,6 +183,7 @@ class _TicketScreenState extends State<TicketScreen> {
 
   late final DatabaseReference _userTicketsRef;
   late final String? _uid;
+  Timer? _busBookingTimer;
 
   // Keep English literals; translate them when rendering.
   final List<TicketProduct> _regular = const [
@@ -215,12 +248,37 @@ class _TicketScreenState extends State<TicketScreen> {
     ),
   ];
 
+  List<TicketProduct> get _busOnDemand => busOnDemandPasses
+      .map(
+        (pass) => TicketProduct(
+          id: pass.id,
+          klass: TicketClass.regular,
+          title: pass.title,
+          description: pass.description,
+          priceSar: pass.priceSar,
+        ),
+      )
+      .toList(growable: false);
+
   @override
   void initState() {
     super.initState();
     _uid = FirebaseAuth.instance.currentUser?.uid;
     _userTicketsRef =
         FirebaseDatabase.instance.ref('App/Tickets/${_uid ?? 'anon'}');
+    if (_uid != null) {
+      BusOnDemandService.reconcileNoShows(_uid!).catchError((_) {});
+      _busBookingTimer = Timer.periodic(const Duration(minutes: 1), (_) {
+        BusOnDemandService.reconcileNoShows(_uid!).catchError((_) {});
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _busBookingTimer?.cancel();
+    super.dispose();
   }
 
   // --- date helpers ---
@@ -242,6 +300,10 @@ class _TicketScreenState extends State<TicketScreen> {
       case 'reg_30d':
       case 'fc_30d':
         return const Duration(days: 30);
+      case 'bod_30m':
+        return const Duration(minutes: 30);
+      case 'bod_combined_3h':
+        return const Duration(hours: 3);
       default:
         return const Duration(days: 1);
     }
@@ -341,8 +403,107 @@ class _TicketScreenState extends State<TicketScreen> {
         ..._regular.map((p) => _ticketCard(p)),
         const SizedBox(height: 6),
         ..._first.map((p) => _ticketCard(p)),
+        const SizedBox(height: 22),
+        Text(
+          'Bus on Demand',
+          style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w800,
+              ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Book a scheduled pickup between a metro station and your location.',
+          style: TextStyle(
+            color: Theme.of(context).colorScheme.onSurface.withOpacity(.7),
+          ),
+        ),
+        const SizedBox(height: 8),
+        ...busOnDemandPasses.map(_busOnDemandPassCard),
         const SizedBox(height: 12),
       ],
+    );
+  }
+
+  Widget _busOnDemandPassCard(BusOnDemandPass pass) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final duration = pass.validity.inMinutes < 60
+        ? '${pass.validity.inMinutes} minutes'
+        : '${pass.validity.inHours} hours';
+    return Container(
+      margin: const EdgeInsets.only(top: 10),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: AppColors.kPrimaryColor.withOpacity(.14),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  'BUS ON DEMAND',
+                  style: TextStyle(
+                    color: cs.onSurface,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: .5,
+                  ),
+                ),
+              ),
+              const Spacer(),
+              const Icon(Icons.directions_bus_rounded,
+                  color: AppColors.kPrimaryColor),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(pass.title,
+              style: TextStyle(
+                  fontSize: 19,
+                  color: cs.onSurface,
+                  fontWeight: FontWeight.w800)),
+          const SizedBox(height: 5),
+          Text(
+              '$duration validity${pass.includesMetro ? ' · Metro included' : ''}',
+              style: TextStyle(color: cs.onSurface.withOpacity(.7))),
+          const SizedBox(height: 12),
+          Text('SAR ${pass.priceSar}',
+              style: const TextStyle(
+                  color: AppColors.kPrimaryColor,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w900)),
+          const SizedBox(height: 8),
+          Text(pass.description,
+              style:
+                  TextStyle(color: cs.onSurface.withOpacity(.82), height: 1.3)),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: () async {
+              final booked = await Navigator.of(context).push<bool>(
+                MaterialPageRoute(
+                  builder: (_) => BusOnDemandBookingScreen(pass: pass),
+                ),
+              );
+              if (booked == true && mounted) setState(() => _tabIndex = 0);
+            },
+            icon: const Icon(Icons.add_location_alt_rounded),
+            label: const Text('Book pickup'),
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.kPrimaryColor,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -684,6 +845,9 @@ class _TicketScreenState extends State<TicketScreen> {
     try {
       final product = _productFromId(r.productId);
       if (product == null) return _unknownTicketCard(r);
+      if (r.bookingId != null && r.productId.startsWith('bod_')) {
+        return _busOnDemandTicketCard(product, r);
+      }
       return _myTicketCard(product, r);
     } catch (e) {
       return _errorRow(
@@ -723,6 +887,183 @@ class _TicketScreenState extends State<TicketScreen> {
         ),
       ),
     );
+  }
+
+  Widget _busOnDemandTicketCard(TicketProduct product, TicketRecord record) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final now = DateTime.now();
+    final pickup = record.scheduledPickup;
+    final status = record.busBookingStatus ?? 'scheduled';
+    final boardingEnds = pickup?.add(const Duration(minutes: 10));
+    final canBoard = !record.activated &&
+        status != 'noShow' &&
+        pickup != null &&
+        !now.isBefore(pickup) &&
+        (boardingEnds == null || now.isBefore(boardingEnds));
+    final isUpcoming = pickup != null && now.isBefore(pickup);
+    final statusText = record.activated
+        ? 'Boarded'
+        : status == 'noShow'
+            ? 'No-show'
+            : canBoard
+                ? 'Driver arrived'
+                : 'Scheduled';
+    final statusColor = status == 'noShow'
+        ? cs.error
+        : record.activated
+            ? AppColors.kPrimaryColor
+            : Colors.orange.shade700;
+    final direction = record.busDirection == 'stationToLocation'
+        ? 'Station to location'
+        : 'Location to station';
+    final pickupLabel = record.busDirection == 'stationToLocation'
+        ? record.stationName
+        : record.locationLabel;
+    final destinationLabel = record.busDirection == 'stationToLocation'
+        ? record.locationLabel
+        : record.stationName;
+
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: cs.surface,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: cs.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 42,
+                height: 42,
+                decoration: BoxDecoration(
+                  color: AppColors.kPrimaryColor.withOpacity(.14),
+                  borderRadius: BorderRadius.circular(13),
+                ),
+                child: const Icon(Icons.directions_bus_rounded,
+                    color: AppColors.kPrimaryColor),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Text(product.title,
+                    style: TextStyle(
+                        color: cs.onSurface,
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800)),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+                decoration: BoxDecoration(
+                  color: statusColor.withOpacity(.13),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(statusText,
+                    style: TextStyle(
+                        color: statusColor,
+                        fontWeight: FontWeight.w800,
+                        fontSize: 12)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          _busBookingDetail(Icons.swap_vert_rounded, direction, cs),
+          _busBookingDetail(Icons.radio_button_checked_rounded,
+              'Pickup: ${pickupLabel ?? 'Unknown location'}', cs),
+          _busBookingDetail(Icons.flag_rounded,
+              'To: ${destinationLabel ?? 'Unknown destination'}', cs),
+          if (pickup != null)
+            _busBookingDetail(Icons.schedule_rounded,
+                'Scheduled: ${_fmtDateTime(pickup)}', cs),
+          _busBookingDetail(
+            Icons.confirmation_number_rounded,
+            record.metroIncluded
+                ? 'Metro ticket included for 3 hours after boarding'
+                : 'Bus on Demand validity begins when you board',
+            cs,
+          ),
+          const SizedBox(height: 14),
+          if (canBoard)
+            FilledButton.icon(
+              onPressed: () => _promptBusBoarding(record, product),
+              icon: const Icon(Icons.check_circle_rounded),
+              label: const Text('I boarded & activate'),
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColors.kPrimaryColor,
+                foregroundColor: Colors.white,
+              ),
+            )
+          else if (isUpcoming && !record.activated)
+            Text(
+              'Activation is available when the driver arrives. You will receive reminders beginning 30 minutes before pickup.',
+              style:
+                  TextStyle(color: cs.onSurface.withOpacity(.7), height: 1.3),
+            )
+          else if (status == 'noShow')
+            Text('The 10-minute boarding window has ended.',
+                style: TextStyle(color: cs.error))
+          else if (record.activated && _isCurrentlyActive(record))
+            ElevatedButton.icon(
+              onPressed: () => _showQrLarge(record, product),
+              icon: const Icon(Icons.qr_code_2_rounded),
+              label: const Text('Show QR'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _busBookingDetail(IconData icon, String text, ColorScheme cs) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, size: 18, color: cs.onSurface.withOpacity(.62)),
+          const SizedBox(width: 9),
+          Expanded(
+            child: Text(text,
+                style: TextStyle(color: cs.onSurface.withOpacity(.85))),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _promptBusBoarding(
+      TicketRecord record, TicketProduct product) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Activate after boarding?'),
+        content: Text(
+          'Confirm only after you have boarded the Bus on Demand vehicle. '
+          'This starts the ${_durationForProduct(product.id).inMinutes < 60 ? '${_durationForProduct(product.id).inMinutes}-minute' : '${_durationForProduct(product.id).inHours}-hour'} validity period.',
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancel')),
+          FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('I boarded')),
+        ],
+      ),
+    );
+    if (confirmed != true || _uid == null || record.bookingId == null) return;
+    try {
+      await BusOnDemandService.activateBoarding(
+        uid: _uid!,
+        ticketId: record.id,
+        bookingId: record.bookingId!,
+        validity: _durationForProduct(product.id),
+      );
+      _notify('You have successfully boarded the bus.');
+    } catch (error) {
+      _notify('Could not activate Bus on Demand: $error');
+    }
   }
 
   Widget _unknownTicketCard(TicketRecord r) {
@@ -1214,6 +1555,9 @@ class _TicketScreenState extends State<TicketScreen> {
       if (p.id == id) return p;
     }
     for (final p in _first) {
+      if (p.id == id) return p;
+    }
+    for (final p in _busOnDemand) {
       if (p.id == id) return p;
     }
     return null;
