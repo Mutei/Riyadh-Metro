@@ -51,6 +51,7 @@ class TicketRecord {
   final String? locationLabel;
   final DateTime? scheduledPickup;
   final bool metroIncluded;
+  final bool busHidden;
 
   final DateTime? purchasedAt;
   final DateTime? activatedAt;
@@ -74,6 +75,7 @@ class TicketRecord {
     required this.locationLabel,
     required this.scheduledPickup,
     required this.metroIncluded,
+    required this.busHidden,
     required this.purchasedAt,
     required this.activatedAt,
     required this.expiresAt,
@@ -161,6 +163,7 @@ class TicketRecord {
           _s(m['locationLabel']).isEmpty ? null : _s(m['locationLabel']),
       scheduledPickup: _millis(m['scheduledPickupMillis']),
       metroIncluded: _b(m['metroIncluded']),
+      busHidden: _b(m['busHidden']),
       purchasedAt: purchasedParsed,
       activatedAt: activatedAt,
       expiresAt: expiresAt,
@@ -268,6 +271,8 @@ class _TicketScreenState extends State<TicketScreen> {
         FirebaseDatabase.instance.ref('App/Tickets/${_uid ?? 'anon'}');
     if (_uid != null) {
       BusOnDemandService.reconcileNoShows(_uid!).catchError((_) {});
+      BusOnDemandNotifications.reschedulePendingBookings(_uid!)
+          .catchError((_) {});
       _busBookingTimer = Timer.periodic(const Duration(minutes: 1), (_) {
         BusOnDemandService.reconcileNoShows(_uid!).catchError((_) {});
         if (mounted) setState(() {});
@@ -810,7 +815,8 @@ class _TicketScreenState extends State<TicketScreen> {
           }
         }
 
-        final visible = records.where((r) => !r.expired).toList();
+        final visible =
+            records.where((r) => !r.expired && !r.busHidden).toList();
         if (visible.isEmpty) return _myTicketsPlaceholder();
 
         visible.sort((a, b) {

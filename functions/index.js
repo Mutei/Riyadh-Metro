@@ -1,6 +1,7 @@
 const { initializeApp } = require("firebase-admin/app");
 const { getDatabase } = require("firebase-admin/database");
 const { onValueWritten } = require("firebase-functions/v2/database");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 
 initializeApp();
 
@@ -138,5 +139,48 @@ exports.publishMetroRouteAnalytics = onValueWritten(
       lineCounts: stats.lineCounts || {},
       updatedAt: numberValue(stats.updatedAt),
     });
+  },
+);
+
+// Keeps the Bus on Demand lifecycle authoritative even when the app is not
+// running. No-show records remain auditable, while their ticket card is hidden
+// 30 minutes after the 10-minute boarding window has ended.
+exports.reconcileBusOnDemandLifecycle = onSchedule(
+  { schedule: "every 1 minutes", timeZone: "Asia/Riyadh" },
+  async () => {
+    const snapshot = await getDatabase().ref("App/BusOnDemandBookings").get();
+    if (!snapshot.exists()) return;
+
+    const now = Date.now();
+    const updates = {};
+    const users = snapshot.val() || {};
+    for (const [uid, bookings] of Object.entries(users)) {
+      if (!bookings || typeof bookings !== "object") continue;
+      for (const [bookingId, booking] of Object.entries(bookings)) {
+        if (!booking || typeof booking !== "object") continue;
+        const pickup = numberValue(booking.scheduledPickupMillis);
+        const ticketId = nonEmpty(booking.ticketId);
+        const status = String(booking.status || "");
+        if (!pickup || !ticketId) continue;
+        const boardingCloses = pickup + 10 * 60 * 1000;
+        const hideAt = boardingCloses + 30 * 60 * 1000;
+        const bookingPath = `App/BusOnDemandBookings/${uid}/${bookingId}`;
+        const ticketPath = `App/Tickets/${uid}/${ticketId}`;
+
+        if (status === "scheduled" && now >= pickup && now < boardingCloses) {
+          updates[`${bookingPath}/status`] = "driverArrived";
+          updates[`${ticketPath}/busBookingStatus`] = "driverArrived";
+        } else if ((status === "scheduled" || status === "driverArrived") &&
+          now >= boardingCloses) {
+          updates[`${bookingPath}/status`] = "noShow";
+          updates[`${bookingPath}/noShowAtMillis`] = now;
+          updates[`${ticketPath}/busBookingStatus`] = "noShow";
+        } else if (status === "noShow" && now >= hideAt && !booking.hiddenAtMillis) {
+          updates[`${bookingPath}/hiddenAtMillis`] = now;
+          updates[`${ticketPath}/busHidden`] = true;
+        }
+      }
+    }
+    if (Object.keys(updates).length) await getDatabase().ref().update(updates);
   },
 );

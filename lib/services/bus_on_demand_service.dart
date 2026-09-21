@@ -170,16 +170,30 @@ class BusOnDemandService {
       rethrow;
     }
 
-    // A denied notification permission must not undo a completed booking.
+    // A denied notification permission must not undo a completed booking, but
+    // its state is retained for support and for the booking status UI.
     try {
-      await BusOnDemandNotifications.schedule(
+      final scheduled = await BusOnDemandNotifications.schedule(
         bookingId: bookingId,
         scheduledPickup: booking.scheduledPickup,
         pickupLabel: booking.direction == BusOnDemandDirection.stationToLocation
             ? booking.stationName
             : booking.locationLabel,
+        requestPermissions: true,
       );
-    } catch (_) {}
+      await _bookings(uid).child(bookingId).update({
+        'notificationScheduleStatus': scheduled ? 'scheduled' : 'unavailable',
+        'notificationScheduleUpdatedAtMillis':
+            DateTime.now().millisecondsSinceEpoch,
+      });
+    } catch (error) {
+      await _bookings(uid).child(bookingId).update({
+        'notificationScheduleStatus': 'failed',
+        'notificationScheduleError': error.toString(),
+        'notificationScheduleUpdatedAtMillis':
+            DateTime.now().millisecondsSinceEpoch,
+      });
+    }
     return bookingId;
   }
 
@@ -253,6 +267,11 @@ class BusOnDemandService {
         updates['App/BusOnDemandBookings/$uid/$id/noShowAtMillis'] =
             now.millisecondsSinceEpoch;
         updates['App/Tickets/$uid/$ticketId/busBookingStatus'] = 'noShow';
+      } else if (status == 'noShow' &&
+          !now.isBefore(closing.add(const Duration(minutes: 30)))) {
+        updates['App/BusOnDemandBookings/$uid/$id/hiddenAtMillis'] =
+            now.millisecondsSinceEpoch;
+        updates['App/Tickets/$uid/$ticketId/busHidden'] = true;
       }
     }
     if (updates.isNotEmpty) await _database.ref().update(updates);
@@ -289,13 +308,19 @@ class BusOnDemandNotifications {
     return 1200000 + ((hash & 0x3fffffff) % 400000) * 10 + event;
   }
 
-  static Future<void> schedule({
+  static Future<bool> schedule({
     required String bookingId,
     required DateTime scheduledPickup,
     required String pickupLabel,
+    bool requestPermissions = false,
   }) async {
     await _ensureReady();
+    final notificationsEnabled = requestPermissions
+        ? await AppLocalNotifications.prepareScheduledNotifications()
+        : await AppLocalNotifications.scheduledNotificationsEnabled();
+    if (!notificationsEnabled) return false;
     final now = DateTime.now();
+    var scheduledAny = false;
     for (var lead = 30; lead >= 5; lead -= 5) {
       final when = scheduledPickup.subtract(Duration(minutes: lead));
       if (!when.isAfter(now)) continue;
@@ -305,6 +330,7 @@ class BusOnDemandNotifications {
         title: 'Bus on Demand is approaching',
         body: 'Your pickup at $pickupLabel is in $lead minutes.',
       );
+      scheduledAny = true;
     }
     if (scheduledPickup.isAfter(now)) {
       await _schedule(
@@ -314,6 +340,7 @@ class BusOnDemandNotifications {
         body:
             'Your Bus on Demand vehicle is at $pickupLabel. You have up to 10 minutes to board.',
       );
+      scheduledAny = true;
     }
     final noShowAt = scheduledPickup.add(const Duration(minutes: 10));
     if (noShowAt.isAfter(now)) {
@@ -323,6 +350,38 @@ class BusOnDemandNotifications {
         title: 'Bus on Demand boarding window ended',
         body:
             'The bus has left $pickupLabel because the card was not activated.',
+      );
+      scheduledAny = true;
+    }
+    return scheduledAny;
+  }
+
+  /// Replaces the stable notification IDs for outstanding bookings after an
+  /// app restart or an app update. The Android boot receiver handles reboots.
+  static Future<void> reschedulePendingBookings(String uid) async {
+    final snapshot = await FirebaseDatabase.instance
+        .ref('App/BusOnDemandBookings/$uid')
+        .get();
+    if (snapshot.value is! Map) return;
+    final now = DateTime.now();
+    for (final entry
+        in Map<dynamic, dynamic>.from(snapshot.value as Map).entries) {
+      if (entry.value is! Map) continue;
+      final data = Map<dynamic, dynamic>.from(entry.value as Map);
+      final pickupMillis = (data['scheduledPickupMillis'] as num?)?.toInt();
+      final status = data['status']?.toString();
+      if (pickupMillis == null ||
+          (status != 'scheduled' && status != 'driverArrived')) {
+        continue;
+      }
+      final pickup = DateTime.fromMillisecondsSinceEpoch(pickupMillis);
+      if (!pickup.add(const Duration(minutes: 10)).isAfter(now)) continue;
+      await schedule(
+        bookingId: entry.key.toString(),
+        scheduledPickup: pickup,
+        pickupLabel: data['direction'] == 'stationToLocation'
+            ? data['stationName']?.toString() ?? 'metro station'
+            : data['locationLabel']?.toString() ?? 'pickup location',
       );
     }
   }
@@ -365,7 +424,10 @@ class BusOnDemandNotifications {
       androidAllowWhileIdle: true,
       uiLocalNotificationDateInterpretation:
           UILocalNotificationDateInterpretation.absoluteTime,
-      androidScheduleMode: AndroidScheduleMode.inexactAllowWhileIdle,
+      androidScheduleMode:
+          AppLocalNotifications.scheduledNotificationsCanBeExact
+              ? AndroidScheduleMode.exactAllowWhileIdle
+              : AndroidScheduleMode.inexactAllowWhileIdle,
     );
   }
 }

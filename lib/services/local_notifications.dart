@@ -118,6 +118,57 @@ class AppLocalNotifications {
     _inited = true;
   }
 
+  /// Requests the Android permissions needed for reliable, time-sensitive
+  /// pickup reminders. Exact alarms gracefully fall back to inexact delivery
+  /// when the user does not grant the special Android permission.
+  static Future<bool> prepareScheduledNotifications() async {
+    await init();
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    if (android == null) return true;
+
+    var notificationsEnabled = await android.areNotificationsEnabled() ?? true;
+    if (!notificationsEnabled) {
+      notificationsEnabled =
+          await android.requestNotificationsPermission() ?? false;
+    }
+
+    var canScheduleExactly =
+        await android.canScheduleExactNotifications() ?? false;
+    if (!canScheduleExactly) {
+      await android.requestExactAlarmsPermission();
+      canScheduleExactly =
+          await android.canScheduleExactNotifications() ?? false;
+    }
+    _scheduledNotificationsCanBeExact = canScheduleExactly;
+    return notificationsEnabled;
+  }
+
+  static bool _scheduledNotificationsCanBeExact = false;
+
+  static Future<bool> canScheduleNotificationsExactly() async {
+    await init();
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    if (android == null) return false;
+    _scheduledNotificationsCanBeExact =
+        await android.canScheduleExactNotifications() ?? false;
+    return _scheduledNotificationsCanBeExact;
+  }
+
+  static Future<bool> scheduledNotificationsEnabled() async {
+    await init();
+    final android = _plugin.resolvePlatformSpecificImplementation<
+        AndroidFlutterLocalNotificationsPlugin>();
+    if (android == null) return true;
+    _scheduledNotificationsCanBeExact =
+        await android.canScheduleExactNotifications() ?? false;
+    return await android.areNotificationsEnabled() ?? true;
+  }
+
+  static bool get scheduledNotificationsCanBeExact =>
+      _scheduledNotificationsCanBeExact;
+
   static Future<void> show({
     String? title,
     required String body,
