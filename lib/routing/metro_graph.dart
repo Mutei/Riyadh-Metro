@@ -13,6 +13,7 @@ class MetroGraph {
   static const double walkSpeedMps = 1.35;
   static const int metroPerStopSec = 150;
   static const int transferPenaltySec = 60;
+  static const int inStationTransferSec = 90;
   static const double maxTransferMeters = 1200;
   static const double maxOriginDestLinkMeters = 3000;
   static const int originDestCandidates = 5;
@@ -132,6 +133,61 @@ class MetroGraph {
     final adj = <String, List<GEdge>>{};
     void addEdge(String from, GEdge e) => (adj[from] ??= []).add(e);
 
+    // These names identify physical interchanges represented by separate
+    // platform nodes in the line datasets. They must not be sent to road
+    // directions as if the rider had to leave the station.
+    const inStationInterchanges = <String, Set<String>>{
+      'Al Rabi': {'purple', 'yellow'},
+      'An Naseem': {'purple', 'orange'},
+      'Hamra': {'red', 'purple'},
+      'KAFD': {'blue', 'purple', 'yellow'},
+      'Ministry of Education': {'red', 'green'},
+      'National Museum': {'blue', 'green'},
+      'Qasr Al Hokm': {'blue', 'orange'},
+      'SABIC': {'purple', 'yellow'},
+      'STC': {'blue', 'red'},
+      'Uthman Bin Affan Road': {'purple', 'yellow'},
+    };
+    final inStationPairs = <String>{};
+
+    String pairKey(String first, String second) =>
+        first.compareTo(second) < 0 ? '$first|$second' : '$second|$first';
+
+    for (final interchange in inStationInterchanges.entries) {
+      final platforms = stationList
+          .where((node) =>
+              node.name == interchange.key &&
+              interchange.value.contains(node.lineKey))
+          .toList();
+      for (var i = 0; i < platforms.length; i++) {
+        for (var j = i + 1; j < platforms.length; j++) {
+          final from = platforms[i];
+          final to = platforms[j];
+          inStationPairs.add(pairKey(from.id, to.id));
+          addEdge(
+            from.id,
+            GEdge(
+              to: to.id,
+              seconds: inStationTransferSec.toDouble(),
+              kind: 'transfer',
+              meters: 0,
+              isInStationTransfer: true,
+            ),
+          );
+          addEdge(
+            to.id,
+            GEdge(
+              to: from.id,
+              seconds: inStationTransferSec.toDouble(),
+              kind: 'transfer',
+              meters: 0,
+              isInStationTransfer: true,
+            ),
+          );
+        }
+      }
+    }
+
     void addLine(String key, int count) {
       for (int i = 0; i < count - 1; i++) {
         final a = '$key:$i';
@@ -164,6 +220,7 @@ class MetroGraph {
     for (final a in stationList) {
       for (final b in stationList) {
         if (a.lineKey == b.lineKey) continue;
+        if (inStationPairs.contains(pairKey(a.id, b.id))) continue;
         final meters = _metersBetween(a.pos, b.pos);
         if (meters <= maxTransferMeters) {
           final secs = meters / walkSpeedMps + transferPenaltySec;

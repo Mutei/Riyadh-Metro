@@ -3998,7 +3998,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     String edgeKey(String from, GEdge edge) =>
         '$from>${edge.to}|${edge.kind}|${edge.lineKey ?? ''}|'
-        '${edge.seconds}|${edge.meters ?? ''}';
+        '${edge.seconds}|${edge.meters ?? ''}|${edge.isInStationTransfer}';
 
     RouteOption buildOption(dynamic result) {
       final path = List<String>.from(result.path as List);
@@ -4155,6 +4155,35 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       } else if (e.kind == 'transfer') {
         final a = opt.nodes[fromId]!;
         final b = opt.nodes[toId]!;
+        if (e.isInStationTransfer) {
+          markers.addAll([
+            Marker(
+              markerId: MarkerId('m_${a.id}'),
+              position: a.pos,
+              icon: BitmapDescriptor.defaultMarkerWithHue(
+                  _hueForLineKey(a.lineKey)),
+              infoWindow: InfoWindow(
+                title: a.name,
+                snippet:
+                    '${getTranslated(context, 'Change lines inside station')} • ${_cap(a.lineKey)} → ${_cap(b.lineKey)}',
+              ),
+              zIndex: 1200,
+            ),
+            Marker(
+              markerId: MarkerId('m_${b.id}'),
+              position: b.pos,
+              icon: BitmapDescriptor.defaultMarkerWithHue(
+                  _hueForLineKey(b.lineKey)),
+              infoWindow: InfoWindow(
+                title: b.name,
+                snippet:
+                    '${getTranslated(context, 'Change lines inside station')} • ${_cap(a.lineKey)} → ${_cap(b.lineKey)}',
+              ),
+              zIndex: 1200,
+            ),
+          ]);
+          continue;
+        }
         final xferLeg =
             await _dirs.routeViaRoads(a.pos, b.pos, mode: TravelMode.walk);
         if (xferLeg != null && xferLeg.points.length >= 2) {
@@ -4334,12 +4363,19 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
       if (e.kind == 'transfer') {
         flush(r.nodes[fromId]!.name);
+        final from = r.nodes[fromId]!;
         final to = r.nodes[toId]!;
-        steps.add(
-            '${getTranslated(context, 'Transfer walk')} ~${fmtMeters(e.meters ?? 0)} ${getTranslated(context, 'to')} ${to.name} (${_cap(to.lineKey)} ${getTranslated(context, 'line')})');
+        if (e.isInStationTransfer) {
+          steps.add(
+              '${getTranslated(context, 'Change lines inside station')}: ${from.name} • ${_cap(from.lineKey)} → ${_cap(to.lineKey)}');
+        } else {
+          steps.add(
+              '${getTranslated(context, 'Transfer walk')} ~${fmtMeters(e.meters ?? 0)} ${getTranslated(context, 'to')} ${to.name} (${_cap(to.lineKey)} ${getTranslated(context, 'line')})');
+        }
         chips.add(ModeIcon(
             icon: Icons.swap_horiz_rounded,
-            label: getTranslated(context, 'Transfer')));
+            label: getTranslated(
+                context, e.isInStationTransfer ? 'Change lines' : 'Transfer')));
         continue;
       }
 
