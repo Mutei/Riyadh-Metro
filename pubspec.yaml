@@ -58,6 +58,7 @@ dependencies:
   timezone: ^0.9.4
   speech_to_text: ^7.3.0
   pdf: ^3.11.3
+  arabic_bidi: ^1.0.0
   path_provider: ^2.1.5
   share_plus: ^12.0.1
 

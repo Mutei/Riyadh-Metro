@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:arabic_bidi/arabic_bidi.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:flutter/services.dart' show rootBundle;
@@ -252,10 +253,14 @@ class TripPdfService {
   ) async {
     final copy = _TripPdfCopy.forLanguage(trip.languageCode);
     final isArabic = copy.arabic;
-    final arabicFont = isArabic ? await _loadArabicFont() : null;
+    // A report's UI language can differ from a station or place name typed by
+    // the rider. Keep Helvetica for Latin copy, but always embed Amiri as a
+    // fallback so Arabic values in an English report remain readable.
+    final arabicFont = await _loadArabicFont();
     final theme = pw.ThemeData.withFont(
-      base: arabicFont ?? pw.Font.helvetica(),
-      bold: arabicFont ?? pw.Font.helveticaBold(),
+      base: isArabic ? arabicFont : pw.Font.helvetica(),
+      bold: isArabic ? arabicFont : pw.Font.helveticaBold(),
+      fontFallback: [arabicFont],
     );
     final document = pw.Document(theme: theme);
 
@@ -576,14 +581,20 @@ class TripPdfService {
       style: pw.TextStyle(
           color: _ink, fontSize: 14, fontWeight: pw.FontWeight.bold));
 
-  pw.Widget _text(String value,
-          {required bool isArabic, pw.TextStyle? style}) =>
-      pw.Directionality(
-        textDirection: isArabic ? pw.TextDirection.rtl : pw.TextDirection.ltr,
-        child: pw.Text(value,
-            style: style,
-            textAlign: isArabic ? pw.TextAlign.right : pw.TextAlign.left),
-      );
+  pw.Widget _text(String value, {required bool isArabic, pw.TextStyle? style}) {
+    final containsArabic =
+        RegExp(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]').hasMatch(value);
+    final useRtl = isArabic || containsArabic;
+    final displayValue = containsArabic ? ArabicBidi.reshape(value) : value;
+    return pw.Directionality(
+      textDirection: useRtl ? pw.TextDirection.rtl : pw.TextDirection.ltr,
+      child: pw.Text(
+        displayValue,
+        style: style,
+        textAlign: useRtl ? pw.TextAlign.right : pw.TextAlign.left,
+      ),
+    );
+  }
 
   String _timelineMeta(
       _TripPdfTimelineRow row, _TripPdfCopy copy, bool isArabic) {
