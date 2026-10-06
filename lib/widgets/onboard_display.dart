@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:math' as math;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 class MetroStop {
@@ -15,6 +17,62 @@ class MetroStop {
     this.isTransfer = false,
     this.transferLines = const [],
   });
+}
+
+/// The live portion of an onboard display. MainScreen publishes a replacement
+/// whenever trip tracking advances, so an already-open sheet stays current.
+class OnboardDisplayData {
+  const OnboardDisplayData({
+    required this.stops,
+    required this.currentIndex,
+    required this.lineKey,
+    required this.lineColor,
+    required this.isRTL,
+    required this.forward,
+    this.directionNameEn,
+    this.directionNameAr,
+    this.etaToNext,
+    this.nextStationOverride,
+    this.fullLineStops,
+    this.autoBuildSegmentFromFull = true,
+    this.nextLinePreviewStops,
+    this.nextLineKey,
+    this.nextLineColor,
+    this.nextDirectionNameEn,
+    this.nextDirectionNameAr,
+    this.alightHere = false,
+    this.transferHere = false,
+    this.transferToLineKey,
+    this.prepareTransferSoon = false,
+    this.prepareTransferStopsAway = 0,
+    this.prepareTransferToLineKey,
+    this.prepareAtStationName,
+  });
+
+  final List<MetroStop> stops;
+  final int currentIndex;
+  final String lineKey;
+  final Color lineColor;
+  final String? directionNameEn;
+  final String? directionNameAr;
+  final Duration? etaToNext;
+  final bool isRTL;
+  final bool forward;
+  final String? nextStationOverride;
+  final List<MetroStop>? fullLineStops;
+  final bool autoBuildSegmentFromFull;
+  final List<MetroStop>? nextLinePreviewStops;
+  final String? nextLineKey;
+  final Color? nextLineColor;
+  final String? nextDirectionNameEn;
+  final String? nextDirectionNameAr;
+  final bool alightHere;
+  final bool transferHere;
+  final String? transferToLineKey;
+  final bool prepareTransferSoon;
+  final int prepareTransferStopsAway;
+  final String? prepareTransferToLineKey;
+  final String? prepareAtStationName;
 }
 
 /// Launches the onboard (bottom‑sheet) display.
@@ -53,63 +111,115 @@ Future<void> showOnboardDisplay(
   int prepareTransferStopsAway = 0, // e.g., 2
   String? prepareTransferToLineKey, // e.g., "red"
   String? prepareAtStationName, // e.g., "King Abdullah FD"
+  ValueListenable<OnboardDisplayData>? liveData,
 }) async {
   assert(stops.isNotEmpty);
   currentIndex = currentIndex.clamp(0, stops.length - 1);
+  final initialData = OnboardDisplayData(
+    stops: stops,
+    currentIndex: currentIndex,
+    lineKey: lineKey,
+    lineColor: lineColor,
+    directionNameEn: directionNameEn,
+    directionNameAr: directionNameAr,
+    etaToNext: etaToNext,
+    isRTL: isRTL,
+    forward: forward,
+    nextStationOverride: nextStationOverride,
+    fullLineStops: fullLineStops,
+    autoBuildSegmentFromFull: autoBuildSegmentFromFull,
+    nextLinePreviewStops: nextLinePreviewStops,
+    nextLineKey: nextLineKey,
+    nextLineColor: nextLineColor,
+    nextDirectionNameEn: nextDirectionNameEn,
+    nextDirectionNameAr: nextDirectionNameAr,
+    alightHere: alightHere,
+    transferHere: transferHere,
+    transferToLineKey: transferToLineKey,
+    prepareTransferSoon: prepareTransferSoon,
+    prepareTransferStopsAway: prepareTransferStopsAway,
+    prepareTransferToLineKey: prepareTransferToLineKey,
+    prepareAtStationName: prepareAtStationName,
+  );
 
   await showModalBottomSheet(
     context: context,
     isScrollControlled: true,
-    backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+    backgroundColor: Colors.transparent,
     shape: const RoundedRectangleBorder(
-      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
     ),
     builder: (ctx) {
-      return Directionality(
-        textDirection: isRTL ? TextDirection.rtl : TextDirection.ltr,
-        child: _OnboardPanel(
-          // base (current line)
-          stops: stops,
-          currentIndex: currentIndex,
-          lineKey: lineKey,
-          lineColor: lineColor,
-          directionNameEn: directionNameEn,
-          directionNameAr: directionNameAr,
-          etaToNext: etaToNext,
-          isRTL: isRTL,
-          forward: forward,
-          nextStationOverride: nextStationOverride,
-
-          // toggles (optional)
-          fullLineStops: fullLineStops,
-          autoBuildSegmentFromFull: autoBuildSegmentFromFull,
-
-          // next line preview (optional)
-          nextLinePreviewStops: nextLinePreviewStops,
-          nextLineKey: nextLineKey,
-          nextLineColor: nextLineColor,
-          nextDirectionNameEn: nextDirectionNameEn,
-          nextDirectionNameAr: nextDirectionNameAr,
-
-          // Existing action flags
-          alightHere: alightHere,
-          transferHere: transferHere,
-          transferToLineKey: transferToLineKey,
-
-          // NEW prepare flags
-          prepareTransferSoon: prepareTransferSoon,
-          prepareTransferStopsAway: prepareTransferStopsAway,
-          prepareTransferToLineKey: prepareTransferToLineKey,
-          prepareAtStationName: prepareAtStationName,
+      final theme = Theme.of(ctx);
+      final isDark = theme.brightness == Brightness.dark;
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: isDark
+                ? const [Color(0xFF0B1522), Color(0xFF101D2B)]
+                : [theme.scaffoldBackgroundColor, theme.colorScheme.surface],
+          ),
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+          border: Border.all(color: theme.dividerColor.withValues(alpha: .42)),
         ),
+        child: liveData == null
+            ? _OnboardDisplayBody(data: initialData)
+            : ValueListenableBuilder<OnboardDisplayData>(
+                valueListenable: liveData,
+                builder: (_, data, __) => _OnboardDisplayBody(data: data),
+              ),
       );
     },
   );
 }
 
+class _OnboardDisplayBody extends StatelessWidget {
+  const _OnboardDisplayBody({required this.data});
+
+  final OnboardDisplayData data;
+
+  @override
+  Widget build(BuildContext context) {
+    return Directionality(
+      textDirection: data.isRTL ? TextDirection.rtl : TextDirection.ltr,
+      child: _OnboardPanel.fromData(data),
+    );
+  }
+}
+
 enum _ViewMode { segment, fullLine, nextLine }
 
 class _OnboardPanel extends StatefulWidget {
+  _OnboardPanel.fromData(OnboardDisplayData data)
+      : this(
+          stops: data.stops,
+          currentIndex: data.currentIndex,
+          lineKey: data.lineKey,
+          lineColor: data.lineColor,
+          directionNameEn: data.directionNameEn,
+          directionNameAr: data.directionNameAr,
+          etaToNext: data.etaToNext,
+          isRTL: data.isRTL,
+          forward: data.forward,
+          nextStationOverride: data.nextStationOverride,
+          fullLineStops: data.fullLineStops,
+          autoBuildSegmentFromFull: data.autoBuildSegmentFromFull,
+          nextLinePreviewStops: data.nextLinePreviewStops,
+          nextLineKey: data.nextLineKey,
+          nextLineColor: data.nextLineColor,
+          nextDirectionNameEn: data.nextDirectionNameEn,
+          nextDirectionNameAr: data.nextDirectionNameAr,
+          alightHere: data.alightHere,
+          transferHere: data.transferHere,
+          transferToLineKey: data.transferToLineKey,
+          prepareTransferSoon: data.prepareTransferSoon,
+          prepareTransferStopsAway: data.prepareTransferStopsAway,
+          prepareTransferToLineKey: data.prepareTransferToLineKey,
+          prepareAtStationName: data.prepareAtStationName,
+        );
+
   const _OnboardPanel({
     required this.stops,
     required this.currentIndex,
@@ -187,6 +297,9 @@ class _OnboardPanelState extends State<_OnboardPanel>
 
   final _scrollCtrl = ScrollController();
   late _ViewMode _mode;
+  Timer? _etaTicker;
+  Duration? _etaAtUpdate;
+  DateTime? _etaUpdatedAt;
 
   // ───────────── Localization helpers ─────────────
   bool get _rtl => widget.isRTL;
@@ -229,7 +342,8 @@ class _OnboardPanelState extends State<_OnboardPanel>
 
   String _fmtEta(Duration d) {
     if (d.inMinutes >= 1) {
-      final txt = '${d.inMinutes} ${_t("min", "دقيقة")}';
+      final minutes = math.max(1, (d.inSeconds / 60).ceil());
+      final txt = '$minutes ${_t("min", "دقيقة")}';
       return _localizeDigits(txt);
     }
     final txt = '${d.inSeconds}${_t("s", " ث")}'.trim();
@@ -242,7 +356,46 @@ class _OnboardPanelState extends State<_OnboardPanel>
   void initState() {
     super.initState();
     _mode = _initialMode();
+    _resetEta(widget.etaToNext);
     WidgetsBinding.instance.addPostFrameCallback((_) => _centerCurrent());
+  }
+
+  @override
+  void didUpdateWidget(covariant _OnboardPanel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.etaToNext != widget.etaToNext) {
+      _resetEta(widget.etaToNext);
+    }
+
+    final stationChanged = oldWidget.currentIndex != widget.currentIndex ||
+        oldWidget.nextStationOverride != widget.nextStationOverride ||
+        oldWidget.lineKey != widget.lineKey ||
+        oldWidget.forward != widget.forward;
+    if (stationChanged) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _centerCurrent();
+      });
+    }
+  }
+
+  void _resetEta(Duration? eta) {
+    _etaAtUpdate = eta;
+    _etaUpdatedAt = eta == null ? null : DateTime.now();
+    _etaTicker?.cancel();
+    if (eta != null) {
+      _etaTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  Duration? get _displayEta {
+    final eta = _etaAtUpdate;
+    final updatedAt = _etaUpdatedAt;
+    if (eta == null || updatedAt == null) return null;
+    final elapsed = DateTime.now().difference(updatedAt);
+    final remaining = eta - elapsed;
+    return remaining.isNegative ? Duration.zero : remaining;
   }
 
   _ViewMode _initialMode() {
@@ -253,6 +406,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
   }
 
   void _centerCurrent() {
+    if (!_scrollCtrl.hasClients) return;
     const itemExtent = 120.0;
     final idx = _derivedCurrentIndex().toDouble();
     final target = (idx * itemExtent) -
@@ -268,6 +422,7 @@ class _OnboardPanelState extends State<_OnboardPanel>
   void dispose() {
     _ctrl.dispose();
     _scrollCtrl.dispose();
+    _etaTicker?.cancel();
     super.dispose();
   }
 
@@ -438,8 +593,15 @@ class _OnboardPanelState extends State<_OnboardPanel>
         ? activeStops[nextIdx]
         : const MetroStop(id: 'n/a', nameEn: '-', nameAr: '-');
 
-    final hasTransfers = activeStops.any((s) => s.transferLines.isNotEmpty);
-    final double timelineH = hasTransfers ? 150.0 : 120.0;
+    final remainingStops = widget.forward
+        ? math.max(0, activeStops.length - 1 - currentIdx)
+        : math.max(0, currentIdx);
+    final onSurface = t.colorScheme.onSurface;
+    final muted = onSurface.withValues(alpha: isDark ? .68 : .62);
+    final lineSurface = Color.alphaBlend(
+      lineColor.withValues(alpha: isDark ? .25 : .13),
+      t.colorScheme.surface,
+    );
 
     return SafeArea(
       top: false,
@@ -459,50 +621,112 @@ class _OnboardPanelState extends State<_OnboardPanel>
             ),
             const SizedBox(height: 12),
 
-            // Header
-            Row(
-              children: [
-                Container(
-                  width: 12,
-                  height: 36,
-                  decoration: BoxDecoration(
-                    color: lineColor,
-                    borderRadius: BorderRadius.circular(6),
-                  ),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    lineSurface,
+                    lineColor.withValues(alpha: isDark ? .13 : .08),
+                  ],
                 ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      // “Line Blue” -> “الخط الأزرق”
-                      Text(
-                        '${_t("Line", "الخط")} ${_lineNameLocalized(lineKey)}',
-                        style: t.textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w700),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _rtl ? dirTextAr : dirTextEn,
-                        style: t.textTheme.bodyMedium
-                            ?.copyWith(color: t.hintColor),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(color: lineColor.withValues(alpha: .42)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: lineColor,
+                      borderRadius: BorderRadius.circular(15),
+                      boxShadow: [
+                        BoxShadow(
+                          color: lineColor.withValues(alpha: .28),
+                          blurRadius: 14,
+                          offset: const Offset(0, 5),
+                        ),
+                      ],
+                    ),
+                    child: const Icon(
+                      Icons.directions_subway_rounded,
+                      color: Colors.white,
+                      size: 25,
+                    ),
                   ),
-                ),
-                if (widget.etaToNext != null)
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.schedule, size: 18),
-                      const SizedBox(width: 6),
-                      Text(_fmtEta(widget.etaToNext!),
-                          style: t.textTheme.bodyMedium),
-                    ],
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _t('ACTIVE LINE', 'الخط الحالي'),
+                          style: t.textTheme.labelSmall?.copyWith(
+                            color: muted,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 1.1,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${_t("Line", "الخط")} ${_lineNameLocalized(lineKey)}',
+                          style: t.textTheme.titleLarge?.copyWith(
+                            color: onSurface,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -.25,
+                          ),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          _rtl ? dirTextAr : dirTextEn,
+                          style: t.textTheme.bodyMedium?.copyWith(
+                            color: muted,
+                            fontWeight: FontWeight.w600,
+                          ),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
                   ),
-              ],
+                  if (_displayEta != null)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 8,
+                      ),
+                      decoration: BoxDecoration(
+                        color: t.colorScheme.surface.withValues(alpha: .72),
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            _t('ETA', 'الوصول'),
+                            style: t.textTheme.labelSmall?.copyWith(
+                              color: muted,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: .8,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            _fmtEta(_displayEta!),
+                            style: t.textTheme.titleSmall?.copyWith(
+                              color: onSurface,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+              ),
             ),
 
             // Action banner (alight / transfer / prepare)
@@ -562,66 +786,9 @@ class _OnboardPanelState extends State<_OnboardPanel>
               ),
             ],
 
-            const SizedBox(height: 16),
+            const SizedBox(height: 14),
 
-            // Timeline
-            SizedBox(
-              height: timelineH,
-              child: AnimatedBuilder(
-                animation: _curve,
-                builder: (context, _) {
-                  final animT = _curve.value; // 0..1 curved
-                  return Stack(
-                    children: [
-                      Positioned.fill(
-                        child: IgnorePointer(
-                          child: CustomPaint(
-                            painter:
-                                _BaselinePainter(lineColor.withOpacity(0.35)),
-                          ),
-                        ),
-                      ),
-                      ListView.builder(
-                        controller: _scrollCtrl,
-                        scrollDirection: Axis.horizontal,
-                        itemExtent: 120,
-                        itemCount: activeStops.length,
-                        itemBuilder: (context, i) {
-                          final stop = activeStops[i];
-                          final isCurrent = i == currentIdx;
-                          final isPassed =
-                              widget.forward ? i < currentIdx : i > currentIdx;
-                          final isNext = i == nextIdx;
-
-                          return _StationColumn(
-                            stop: stop,
-                            lineColor: lineColor,
-                            state: isCurrent
-                                ? StationState.current
-                                : (isPassed
-                                    ? StationState.passed
-                                    : StationState.upcoming),
-                            // show moving elements on current & next
-                            showTrainHere: isCurrent,
-                            trainT: animT,
-                            animPhase: animT,
-                            isNextDot: isNext,
-                            rtl: widget.isRTL,
-                            forward: widget.forward,
-                            lineNameLocalized:
-                                _lineNameLocalized, // ✅ pass the callback here
-                          );
-                        },
-                      ),
-                    ],
-                  );
-                },
-              ),
-            ),
-
-            const SizedBox(height: 6),
-
-            // Next station card + chips
+            // Next station remains the primary actionable item.
             _NextCard(
               title: _t('Next station', 'المحطة التالية'),
               name: _rtl ? nextStop.nameAr : nextStop.nameEn,
@@ -645,6 +812,75 @@ class _OnboardPanelState extends State<_OnboardPanel>
               lineNameLocalized: _lineNameLocalized,
               tr: _t,
             ),
+            const SizedBox(height: 12),
+
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.fromLTRB(14, 13, 14, 8),
+              decoration: BoxDecoration(
+                color: t.colorScheme.surfaceContainerHighest
+                    .withValues(alpha: isDark ? .46 : .68),
+                borderRadius: BorderRadius.circular(22),
+                border: Border.all(
+                  color: t.dividerColor.withValues(alpha: isDark ? .36 : .5),
+                ),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        width: 30,
+                        height: 30,
+                        decoration: BoxDecoration(
+                          color:
+                              lineColor.withValues(alpha: isDark ? .24 : .14),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.alt_route_rounded,
+                          size: 17,
+                          color: lineColor,
+                        ),
+                      ),
+                      const SizedBox(width: 9),
+                      Expanded(
+                        child: Text(
+                          _t('ROUTE PROGRESS', 'تقدم المسار'),
+                          style: t.textTheme.labelMedium?.copyWith(
+                            color: muted,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: .9,
+                          ),
+                        ),
+                      ),
+                      Text(
+                        '${_localizeDigits(remainingStops.toString())} ${_t('stops left', 'محطات متبقية')}',
+                        style: t.textTheme.labelSmall?.copyWith(
+                          color: onSurface,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  AnimatedBuilder(
+                    animation: _curve,
+                    builder: (context, _) => _PulseRouteSpine(
+                      stops: activeStops,
+                      currentIndex: currentIdx,
+                      nextIndex: nextIdx,
+                      forward: widget.forward,
+                      isRTL: _rtl,
+                      lineColor: lineColor,
+                      pulse: _curve.value,
+                      tr: _t,
+                      lineNameLocalized: _lineNameLocalized,
+                    ),
+                  ),
+                ],
+              ),
+            ),
           ],
         ),
       ),
@@ -653,6 +889,191 @@ class _OnboardPanelState extends State<_OnboardPanel>
 }
 
 enum StationState { passed, current, upcoming }
+
+class _PulseRouteSpine extends StatelessWidget {
+  const _PulseRouteSpine({
+    required this.stops,
+    required this.currentIndex,
+    required this.nextIndex,
+    required this.forward,
+    required this.isRTL,
+    required this.lineColor,
+    required this.pulse,
+    required this.tr,
+    required this.lineNameLocalized,
+  });
+
+  final List<MetroStop> stops;
+  final int currentIndex;
+  final int nextIndex;
+  final bool forward;
+  final bool isRTL;
+  final Color lineColor;
+  final double pulse;
+  final String Function(String, String) tr;
+  final String Function(String) lineNameLocalized;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final rowHeight = 64.0;
+    final height = math.min(260.0, stops.length * rowHeight).toDouble();
+
+    return SizedBox(
+      height: height,
+      child: ListView.builder(
+        padding: EdgeInsets.zero,
+        physics: const BouncingScrollPhysics(),
+        itemCount: stops.length,
+        itemBuilder: (context, index) {
+          final stop = stops[index];
+          final isCurrent = index == currentIndex;
+          final isNext = index == nextIndex;
+          final isPassed =
+              forward ? index < currentIndex : index > currentIndex;
+          final isLast = index == stops.length - 1;
+          final label = isRTL ? stop.nameAr : stop.nameEn;
+          final textColor = (isCurrent || isNext)
+              ? theme.colorScheme.onSurface
+              : theme.colorScheme.onSurface.withValues(alpha: .72);
+          final lineBefore = isPassed || isCurrent;
+          final lineAfter = isPassed;
+
+          final spine = SizedBox(
+            width: 48,
+            height: rowHeight,
+            child: Stack(
+              alignment: Alignment.center,
+              children: [
+                if (index > 0)
+                  Positioned(
+                    top: 0,
+                    width: 3,
+                    height: rowHeight / 2,
+                    child: ColoredBox(
+                      color: lineBefore
+                          ? lineColor
+                          : lineColor.withValues(alpha: .24),
+                    ),
+                  ),
+                if (!isLast)
+                  Positioned(
+                    bottom: 0,
+                    width: 3,
+                    height: rowHeight / 2,
+                    child: ColoredBox(
+                      color: lineAfter
+                          ? lineColor
+                          : lineColor.withValues(alpha: .24),
+                    ),
+                  ),
+                if (isCurrent)
+                  Container(
+                    width: 42 + (pulse * 8),
+                    height: 42 + (pulse * 8),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: lineColor.withValues(alpha: .22 + pulse * .22),
+                        width: 2,
+                      ),
+                    ),
+                  ),
+                Container(
+                  width: isCurrent ? 34 : (isNext ? 24 : 16),
+                  height: isCurrent ? 34 : (isNext ? 24 : 16),
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: isCurrent || isPassed
+                        ? lineColor
+                        : theme.colorScheme.surface,
+                    border: Border.all(
+                      color: lineColor,
+                      width: isCurrent ? 3 : 2,
+                    ),
+                    boxShadow: isCurrent
+                        ? [
+                            BoxShadow(
+                              color: lineColor.withValues(alpha: .45),
+                              blurRadius: 12,
+                              spreadRadius: 1,
+                            ),
+                          ]
+                        : null,
+                  ),
+                  child: Center(
+                    child: Container(
+                      width: isCurrent ? 13 : (isNext ? 8 : 0),
+                      height: isCurrent ? 13 : (isNext ? 8 : 0),
+                      decoration: BoxDecoration(
+                        color: (isCurrent || isNext)
+                            ? Colors.white
+                            : Colors.transparent,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          );
+
+          final details = Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Text(
+                    label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.titleSmall?.copyWith(
+                      color: textColor,
+                      fontWeight: isCurrent || isNext
+                          ? FontWeight.w800
+                          : FontWeight.w600,
+                    ),
+                  ),
+                  if (isNext) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      tr('Next station', 'المحطة التالية'),
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: lineColor,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: .45,
+                      ),
+                    ),
+                  ] else if (stop.transferLines.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Wrap(
+                      spacing: 5,
+                      runSpacing: 4,
+                      children: stop.transferLines
+                          .map((line) => _TransferBadge(
+                                line: line,
+                                compact: true,
+                                lineNameLocalized: lineNameLocalized,
+                              ))
+                          .toList(),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          );
+
+          return Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: isRTL ? [details, spine] : [spine, details],
+          );
+        },
+      ),
+    );
+  }
+}
 
 class _StationColumn extends StatelessWidget {
   const _StationColumn({
@@ -1116,6 +1537,7 @@ class _NextCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final t = Theme.of(context);
+    final isDark = t.brightness == Brightness.dark;
 
     final List<Widget> chips = [];
     if (alightHere) {
@@ -1146,42 +1568,80 @@ class _NextCard extends StatelessWidget {
 
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(12),
-        color: t.cardColor,
-        border: Border.all(color: t.dividerColor.withOpacity(0.5)),
+        borderRadius: BorderRadius.circular(20),
+        color: Color.alphaBlend(
+          accent.withValues(alpha: isDark ? .10 : .055),
+          t.colorScheme.surface,
+        ),
+        border: Border.all(color: accent.withValues(alpha: .34)),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: isDark ? .17 : .06),
+            blurRadius: 14,
+            offset: const Offset(0, 6),
+          ),
+        ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            Container(
-              width: 6,
-              height: 40,
-              decoration: BoxDecoration(
-                  color: accent, borderRadius: BorderRadius.circular(6)),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(title,
-                      style: t.textTheme.labelMedium
-                          ?.copyWith(color: t.hintColor)),
-                  const SizedBox(height: 4),
-                  Text(name,
-                      overflow: TextOverflow.ellipsis,
-                      style: t.textTheme.titleMedium
-                          ?.copyWith(fontWeight: FontWeight.w700)),
-                ],
+          Row(
+            children: [
+              Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  color: accent,
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: accent.withValues(alpha: .3),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: const Icon(
+                  Icons.location_on_rounded,
+                  color: Colors.white,
+                  size: 23,
+                ),
               ),
-            ),
-            if (chips.isNotEmpty) Wrap(spacing: 8, children: chips),
-          ]),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title.toUpperCase(),
+                      style: t.textTheme.labelSmall?.copyWith(
+                        color: t.colorScheme.onSurface.withValues(alpha: .62),
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: .9,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      name,
+                      overflow: TextOverflow.ellipsis,
+                      style: t.textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: -.2,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          if (chips.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            Wrap(spacing: 8, runSpacing: 8, children: chips),
+          ],
           if (transfers.isNotEmpty) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
             Wrap(
               spacing: 6,
               runSpacing: 6,

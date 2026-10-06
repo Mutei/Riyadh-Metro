@@ -5,7 +5,7 @@ import 'dart:ui' as ui;
 
 import 'package:darb/screens/ticket_screen.dart';
 import 'package:flutter/foundation.dart'
-    show defaultTargetPlatform, TargetPlatform;
+    show defaultTargetPlatform, kDebugMode, TargetPlatform;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -18,6 +18,7 @@ import '../constants/colors.dart';
 import '../services/app_bus.dart';
 import '../services/local_notifications.dart';
 import '../services/metro_open_close_alerts.dart';
+import '../services/metro_train_marker_preferences.dart';
 import '../services/trip_notification_settings.dart';
 import '../widgets/all_metro_lines.dart'; // metroLineColors
 import '../widgets/onboard_display.dart';
@@ -55,7 +56,7 @@ import '../services/trip_analytics_service.dart';
 import '../services/nav_session.dart';
 import 'line_segment_picker_screen.dart';
 
-import 'package:flutter/services.dart' show HapticFeedback;
+import 'package:flutter/services.dart' show HapticFeedback, rootBundle;
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_database/firebase_database.dart';
 
@@ -568,8 +569,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   RouteOption? _lastChosenRoute;
   List<RouteOption>? _lastRouteOptions;
   String? _lastDestLabel;
-  BitmapDescriptor? _navArrowIcon; // rendered once
+  BitmapDescriptor? _navArrowIcon; // rendered once for driving trips
+  final Map<String, BitmapDescriptor> _metroTrainIcons = {};
+  final Map<String, ui.Image> _metroTrainArtwork = {};
+  MetroTrainMarkerStyle _metroTrainMarkerStyle = MetroTrainMarkerStyle.classic;
+  ValueNotifier<OnboardDisplayData>? _onboardDisplayUpdates;
   Marker? _userArrowMarker; // updated every fix
+  bool _debugTrainPinVisible = false;
   int _offRouteStreak = 0; // consecutive ticks off the selected route
   bool _isRerouting = false; // guard so we don't reroute twice at once
   DateTime _lastRerouteAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -1014,6 +1020,102 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _navArrowIcon = BitmapDescriptor.fromBytes(bytes!.buffer.asUint8List());
   }
 
+  String _metroTrainAsset(String lineKey,
+      {required MetroTrainMarkerStyle style}) {
+    if (style == MetroTrainMarkerStyle.classic) {
+      return 'assets/markers/metro_train_topdown.png';
+    }
+    switch (lineKey.toLowerCase()) {
+      case 'yellow':
+      case 'blue':
+      case 'red':
+      case 'purple':
+      case 'orange':
+      case 'green':
+        return 'assets/markers/metro_train_${lineKey.toLowerCase()}.png';
+      default:
+        return 'assets/markers/metro_train_topdown.png';
+    }
+  }
+
+  String _metroTrainIconKey(String lineKey, MetroTrainMarkerStyle style) =>
+      '${style.name}:${lineKey.toLowerCase()}';
+
+  Future<ui.Image> _loadMetroTrainArtwork(String asset) async {
+    final cached = _metroTrainArtwork[asset];
+    if (cached != null) return cached;
+
+    final data = await rootBundle.load(asset);
+    final codec = await ui.instantiateImageCodec(data.buffer.asUint8List());
+    final frame = await codec.getNextFrame();
+    _metroTrainArtwork[asset] = frame.image;
+    return frame.image;
+  }
+
+  Future<void> _prepareMetroTrainIcons() async {
+    final dpr = MediaQueryData.fromWindow(ui.window).devicePixelRatio;
+    // Keep the vehicle prominent at normal map zoom without hiding stations.
+    final int size = (68.0 * dpr).round();
+    for (final entry in metroLineColors.entries) {
+      final String key = entry.key.toLowerCase();
+      for (final style in MetroTrainMarkerStyle.values) {
+        final iconKey = _metroTrainIconKey(key, style);
+        if (_metroTrainIcons.containsKey(iconKey)) continue;
+
+        final trainArtwork =
+            await _loadMetroTrainArtwork(_metroTrainAsset(key, style: style));
+        final Color lineColor = entry.value;
+        final recorder = ui.PictureRecorder();
+        final canvas = Canvas(
+          recorder,
+          Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()),
+        );
+        final paint = Paint()..isAntiAlias = true;
+        final center = Offset(size / 2.0, size / 2.0);
+
+        // Concentric rings create the line-colored navigation halo.
+        paint.color = lineColor.withValues(alpha: .18);
+        canvas.drawCircle(center, size * .48, paint);
+        paint
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = size * .022
+          ..color = lineColor.withValues(alpha: .46);
+        canvas.drawCircle(center, size * .37, paint);
+
+        final isClassic = style == MetroTrainMarkerStyle.classic;
+        final source = isClassic
+            ? Rect.fromLTWH(
+                trainArtwork.width * .345,
+                trainArtwork.height * .02,
+                trainArtwork.width * .31,
+                trainArtwork.height * .96,
+              )
+            : Rect.fromLTWH(
+                trainArtwork.width * .08,
+                trainArtwork.height * .05,
+                trainArtwork.width * .84,
+                trainArtwork.height * .90,
+              );
+        final destination = Rect.fromCenter(
+          center: center,
+          width: size * (isClassic ? .28 : .54),
+          height: size * (isClassic ? .74 : .68),
+        );
+        paint
+          ..style = PaintingStyle.fill
+          ..color = Colors.white;
+        canvas.drawImageRect(trainArtwork, source, destination, paint);
+
+        final image = await recorder.endRecording().toImage(size, size);
+        final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+        if (bytes != null) {
+          _metroTrainIcons[iconKey] =
+              BitmapDescriptor.fromBytes(bytes.buffer.asUint8List());
+        }
+      }
+    }
+  }
+
   Future<BitmapDescriptor> _etaBadgeIconCompact({
     required String minsLabel, // e.g. "21 min"
     String? deltaLabel, // e.g. "+3"
@@ -1364,12 +1466,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     _tripDestLabel =
         _destCtrl.text.isNotEmpty ? _destCtrl.text : _tripDestLabel;
-    _tripDestLL = _userDestination;
+    final terminalStation = _terminalStationForEnteredDestination();
+    _tripDestLL = terminalStation?.pos ?? _userDestination;
     _activeTripStops
       ..clear()
       ..addAll(_intermediateStops)
       ..add(_RouteStop(
-        location: _userDestination!,
+        location: _tripDestLL!,
         label: _tripDestLabel ?? _destCtrl.text.trim(),
       ));
     _activeTripStopIndex = 0;
@@ -1443,6 +1546,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _navSpeedMps = pos.speed;
 
     await _prepareNavArrowIcon();
+    if (_tripMode == _TripMode.metro) {
+      await _prepareMetroTrainIcons();
+    }
 
     setState(() {
       _navigating = true;
@@ -2026,11 +2132,21 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             ? u.headingDeg
             : _lastFixHeading;
       }
-      if (_navArrowIcon != null) {
+      final String? activeMetroLineKey = _tripMode == _TripMode.metro &&
+              _metroSeq.isNotEmpty
+          ? _metroSeq[_metroLeg.clamp(0, _metroSeq.length - 1).toInt()].lineKey
+          : _metroCurLineKey;
+      final BitmapDescriptor? navigationIcon = _tripMode == _TripMode.metro
+          ? _metroTrainIcons[_metroTrainIconKey(
+              activeMetroLineKey ?? 'blue',
+              _metroTrainMarkerStyle,
+            )]
+          : _navArrowIcon;
+      if (navigationIcon != null) {
         _userArrowMarker = Marker(
           markerId: const MarkerId('me_nav'),
           position: uiPos,
-          icon: _navArrowIcon!,
+          icon: navigationIcon,
           anchor: const Offset(0.5, 0.5),
           flat: true,
           rotation: brg,
@@ -2189,7 +2305,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 activeDestination.latitude,
                 activeDestination.longitude);
 
-            if (dToDestFromFinal > 80.0) {
+            final terminalIsSelectedStation = _enteredDestinationStations()
+                .any((station) => station.id == finalSt.id);
+            if (dToDestFromFinal > 80.0 && !terminalIsSelectedStation) {
               _tripMode = _TripMode.drive;
               _trafficEnabled = true;
               _navDestination = activeDestination;
@@ -2529,6 +2647,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       }
 
       _updateOngoingTripNotification();
+      _refreshOpenOnboardDisplay();
       if (mounted) setState(() {});
     });
   }
@@ -2921,6 +3040,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     // Notifications & graph
     AppLocalNotifications.init(); // safe multi-call
     unawaited(_loadTripNotificationSettings());
+    unawaited(_loadMetroTrainMarkerPreference());
     _graph = MetroGraph();
 
     // Seed inputs
@@ -3058,6 +3178,112 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     });
   }
 
+  Future<void> _loadMetroTrainMarkerPreference() async {
+    final style = await MetroTrainMarkerPreferences.load();
+    if (mounted) setState(() => _metroTrainMarkerStyle = style);
+  }
+
+  OnboardDisplayData? _buildOnboardDisplayData() {
+    if (_tripMode != _TripMode.metro ||
+        _metroSeq.length < 2 ||
+        _metroCurLineKey == null) {
+      return null;
+    }
+
+    final rawKey = _metroCurLineKey!;
+    final keyLower = rawKey.toLowerCase();
+    final rawStops = switch (keyLower) {
+      'red' => metro.redStations,
+      'yellow' => metro.yellowStations,
+      'purple' => metro.purpleStations,
+      'blue' => metro.blueStations,
+      'orange' => metro.orangeStations,
+      'green' => metro.greenStations,
+      _ => const <Map<String, dynamic>>[],
+    };
+    if (rawStops.isEmpty) return null;
+
+    final allLines = <String, List<Map<String, dynamic>>>{
+      'Red': metro.redStations,
+      'Yellow': metro.yellowStations,
+      'Purple': metro.purpleStations,
+      'Blue': metro.blueStations,
+      'Orange': metro.orangeStations,
+      'Green': metro.greenStations,
+    };
+    final nameToLines = <String, List<String>>{};
+    for (final entry in allLines.entries) {
+      for (final stop in entry.value) {
+        final name = (stop['name'] as String).trim();
+        nameToLines.putIfAbsent(name, () => <String>[]).add(entry.key);
+      }
+    }
+
+    final stops = rawStops.map((stop) {
+      final name = stop['name'] as String;
+      final transfers = List<String>.from(nameToLines[name] ?? const [])
+          .where((line) => line.toLowerCase() != keyLower)
+          .toList();
+      return MetroStop(
+        id: name,
+        nameEn: name,
+        nameAr: stop['nameAr'] as String,
+        isTransfer: transfers.isNotEmpty,
+        transferLines: transfers,
+      );
+    }).toList();
+
+    final leg = _metroLeg.clamp(0, _metroSeq.length - 1).toInt();
+    final current = _metroSeq[leg];
+    int currentIndex = stops.indexWhere(
+      (stop) => stop.nameEn.toLowerCase() == current.name.toLowerCase(),
+    );
+    if (currentIndex == -1) return null;
+
+    int targetIndex = currentIndex;
+    for (var index = leg + 1; index < _metroSeq.length; index++) {
+      final station = _metroSeq[index];
+      if (station.lineKey.toLowerCase() != keyLower) break;
+      final candidate = stops.indexWhere(
+        (stop) => stop.nameEn.toLowerCase() == station.name.toLowerCase(),
+      );
+      if (candidate != -1) targetIndex = candidate;
+    }
+
+    final forward = targetIndex >= currentIndex;
+    final segmentStart = math.min(currentIndex, targetIndex);
+    final segmentEnd = math.max(currentIndex, targetIndex);
+    final journeyStops = stops.sublist(segmentStart, segmentEnd + 1);
+    final directionStop = stops[targetIndex];
+
+    return OnboardDisplayData(
+      stops: journeyStops,
+      currentIndex: currentIndex - segmentStart,
+      lineKey: _cap(rawKey),
+      lineColor:
+          metroLineColors[keyLower] ?? Theme.of(context).colorScheme.primary,
+      directionNameEn: 'To ${directionStop.nameEn}',
+      directionNameAr: 'إلى ${directionStop.nameAr}',
+      etaToNext: Duration(seconds: (_etaSecondsForUI() as num).round()),
+      isRTL: Localizations.localeOf(context).languageCode == 'ar',
+      forward: forward,
+      nextStationOverride: _metroNextName,
+      alightHere: _metroAlightAtNext,
+      transferHere: _transferAtNext,
+      transferToLineKey: _transferToLineKey,
+      prepareTransferSoon: _transferSoon,
+      prepareTransferStopsAway: _transferSoonStopsAway,
+      prepareTransferToLineKey: _transferSoonLineKey,
+      prepareAtStationName: _transferSoonStationName,
+    );
+  }
+
+  void _refreshOpenOnboardDisplay() {
+    final updates = _onboardDisplayUpdates;
+    final data = _buildOnboardDisplayData();
+    if (updates != null && data != null) updates.value = data;
+  }
+
   void _listenFavorites() {
     final uid = _auth.currentUser?.uid;
     if (uid == null) return;
@@ -3093,6 +3319,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _busSub?.cancel();
     _busRouteSub?.cancel();
     _busFocusSub?.cancel();
+    _onboardDisplayUpdates?.dispose();
+    _onboardDisplayUpdates = null;
 
     super.dispose();
   }
@@ -3214,11 +3442,15 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
 
-  /// The From field is authoritative for metro-station journeys. Keep every
-  /// platform node for the named physical station so interchanges still work,
-  /// but never replace it with a nearby station based on GPS/place coordinates.
   List<StationNode> _enteredOriginStations() {
-    final selectedName = _stationNameKey(_originCtrl.text);
+    return _stationsMatchingEnteredName(_originCtrl.text);
+  }
+
+  /// A station name typed into either search field is authoritative. Keep every
+  /// platform node for that physical station so interchanges still work, but do
+  /// not substitute a nearby station based on a place coordinate.
+  List<StationNode> _stationsMatchingEnteredName(String enteredName) {
+    final selectedName = _stationNameKey(enteredName);
     if (selectedName.isEmpty) return const [];
 
     String? stationName;
@@ -3236,6 +3468,27 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     return _graph.stationList
         .where((node) => _stationNameKey(node.name) == stationName)
         .toList();
+  }
+
+  List<StationNode> _enteredDestinationStations() {
+    return _stationsMatchingEnteredName(_destCtrl.text);
+  }
+
+  /// A destination place pin can be offset from the station. If the text names
+  /// a station, use the selected route's terminal platform for trip completion.
+  StationNode? _terminalStationForEnteredDestination() {
+    final route = _lastChosenRoute;
+    if (route == null) return null;
+
+    final terminalId = route.nodeIds.reversed
+        .firstWhere((id) => id.contains(':'), orElse: () => '');
+    final terminal = route.nodes[terminalId];
+    if (terminal == null) return null;
+
+    return _enteredDestinationStations()
+            .any((station) => station.id == terminal.id)
+        ? terminal
+        : null;
   }
 
   Future<bool> _guardMetroHours() async {
@@ -3954,11 +4207,13 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     };
     final enteredOriginStations =
         useEnteredOrigin ? _enteredOriginStations() : const <StationNode>[];
+    final enteredDestinationStations = _enteredDestinationStations();
     final origins = _graph.kNearestStations(originLL,
         MetroGraph.originDestCandidates, MetroGraph.maxOriginDestLinkMeters);
     final dests = _graph.kNearestStations(destLL,
         MetroGraph.originDestCandidates, MetroGraph.maxOriginDestLinkMeters);
-    if ((enteredOriginStations.isEmpty && origins.isEmpty) || dests.isEmpty) {
+    if ((enteredOriginStations.isEmpty && origins.isEmpty) ||
+        (enteredDestinationStations.isEmpty && dests.isEmpty)) {
       return [];
     }
 
@@ -3980,7 +4235,12 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           ),
     ];
     baseAdj[dstId] = [];
-    for (final destination in dests) {
+    final destinationCandidates = enteredDestinationStations.isNotEmpty
+        ? enteredDestinationStations.map((node) => (node: node, meters: 0.0))
+        : dests.map(
+            (candidate) => (node: candidate.node, meters: candidate.meters),
+          );
+    for (final destination in destinationCandidates) {
       (baseAdj[destination.node.id] ??= []).add(
         GEdge(
           to: dstId,
@@ -5202,6 +5462,217 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     return '${(mps * 3.6).toStringAsFixed(0)} km/h';
   }
 
+  /// Temporary debug-only preview for reviewing the onboard sheet off-metro.
+  /// It deliberately does not write trip state or start location tracking.
+  Future<void> _showStationPulsePreview() async {
+    await _prepareMetroTrainIcons();
+    if (!mounted) return;
+
+    final Marker? markerBeforePreview = _userArrowMarker;
+    final BitmapDescriptor? previewIcon =
+        _metroTrainIcons[_metroTrainIconKey('blue', _metroTrainMarkerStyle)];
+    if (previewIcon != null) {
+      setState(() {
+        _userArrowMarker = Marker(
+          markerId: const MarkerId('station_pulse_preview_train'),
+          position: _camera.target,
+          icon: previewIcon,
+          anchor: const Offset(0.5, 0.5),
+          flat: true,
+          rotation: 20,
+          zIndex: 4000,
+        );
+      });
+    }
+
+    try {
+      await showOnboardDisplay(
+        context,
+        stops: const [
+          MetroStop(
+            id: 'preview-blue-transportation-center',
+            nameEn: 'Transportation Center',
+            nameAr: 'مركز النقل العام',
+          ),
+          MetroStop(
+            id: 'preview-blue-aziziya',
+            nameEn: 'Aziziya',
+            nameAr: 'العزيزية',
+          ),
+          MetroStop(
+            id: 'preview-blue-kafd',
+            nameEn: 'KAFD',
+            nameAr: 'مركز الملك عبدالله المالي',
+            isTransfer: true,
+            transferLines: ['purple', 'yellow'],
+          ),
+        ],
+        currentIndex: 0,
+        lineKey: 'Blue',
+        lineColor: Color(0xFF2E8DF6),
+        directionNameEn: 'To KAFD',
+        directionNameAr: 'إلى مركز الملك عبدالله المالي',
+        etaToNext: const Duration(minutes: 8),
+        isRTL: Localizations.localeOf(context).languageCode == 'ar',
+        forward: true,
+        nextStationOverride: 'Aziziya',
+      );
+    } finally {
+      if (mounted && !_navigating) {
+        setState(() => _userArrowMarker = markerBeforePreview);
+      }
+    }
+  }
+
+  /// Temporary debug-only map preview. It never starts navigation or tracking.
+  Future<void> _toggleMetroTrainPinPreview() async {
+    if (_debugTrainPinVisible) {
+      setState(() {
+        _debugTrainPinVisible = false;
+        _userArrowMarker = null;
+      });
+      return;
+    }
+
+    await _prepareMetroTrainIcons();
+    if (!mounted) return;
+
+    final options = <({String key, String title, String asset, Color color})>[
+      (
+        key: 'classic',
+        title: 'Classic',
+        asset: 'assets/markers/metro_train_topdown.png',
+        color: const Color(0xFF2E8DF6),
+      ),
+      (
+        key: 'yellow',
+        title: 'Yellow',
+        asset: 'assets/markers/metro_train_yellow.png',
+        color: metroLineColors['yellow'] ?? Colors.amber,
+      ),
+      (
+        key: 'blue',
+        title: 'Blue',
+        asset: 'assets/markers/metro_train_blue.png',
+        color: metroLineColors['blue'] ?? Colors.blue,
+      ),
+      (
+        key: 'red',
+        title: 'Red',
+        asset: 'assets/markers/metro_train_red.png',
+        color: metroLineColors['red'] ?? Colors.red,
+      ),
+      (
+        key: 'purple',
+        title: 'Purple',
+        asset: 'assets/markers/metro_train_purple.png',
+        color: metroLineColors['purple'] ?? Colors.purple,
+      ),
+      (
+        key: 'orange',
+        title: 'Orange',
+        asset: 'assets/markers/metro_train_orange.png',
+        color: metroLineColors['orange'] ?? Colors.orange,
+      ),
+      (
+        key: 'green',
+        title: 'Green',
+        asset: 'assets/markers/metro_train_green.png',
+        color: metroLineColors['green'] ?? Colors.green,
+      ),
+    ];
+    final selectedKey = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Preview metro train pins',
+                style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: 4),
+              const Text('Choose a vehicle to place it at the map center.'),
+              const SizedBox(height: 14),
+              GridView.count(
+                crossAxisCount: 4,
+                shrinkWrap: true,
+                mainAxisSpacing: 10,
+                crossAxisSpacing: 10,
+                childAspectRatio: .88,
+                children: [
+                  for (final option in options)
+                    InkWell(
+                      borderRadius: BorderRadius.circular(14),
+                      onTap: () => Navigator.of(sheetContext).pop(option.key),
+                      child: Ink(
+                        decoration: BoxDecoration(
+                          color: option.color.withValues(alpha: .10),
+                          borderRadius: BorderRadius.circular(14),
+                          border: Border.all(
+                            color: option.color.withValues(alpha: .35),
+                          ),
+                        ),
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Expanded(
+                              child: Padding(
+                                padding: const EdgeInsets.all(8),
+                                child: Image.asset(option.asset),
+                              ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.only(bottom: 8),
+                              child: Text(
+                                option.title,
+                                style: Theme.of(sheetContext)
+                                    .textTheme
+                                    .labelMedium
+                                    ?.copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selectedKey == null || !mounted) return;
+
+    final previewStyle = selectedKey == 'classic'
+        ? MetroTrainMarkerStyle.classic
+        : MetroTrainMarkerStyle.lineSpecific;
+    final previewLine = selectedKey == 'classic' ? 'blue' : selectedKey;
+    final previewIcon =
+        _metroTrainIcons[_metroTrainIconKey(previewLine, previewStyle)];
+    if (previewIcon == null) return;
+
+    setState(() {
+      _debugTrainPinVisible = true;
+      _userArrowMarker = Marker(
+        markerId: const MarkerId('metro_train_pin_preview'),
+        position: _camera.target,
+        icon: previewIcon,
+        anchor: const Offset(0.5, 0.5),
+        flat: true,
+        rotation: 20,
+        zIndex: 4000,
+      );
+    });
+  }
+
   // ---------------- UI ----------------
   @override
   Widget build(BuildContext context) {
@@ -5300,8 +5771,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                     } catch (_) {}
                   }
                 },
-                myLocationEnabled:
-                    !_navigating, // hide default blue dot during nav
+                // The custom metro train pin is the active-trip indicator.
+                // Also hide the native blue dot while its debug preview is visible.
+                myLocationEnabled: !_navigating && !_debugTrainPinVisible,
                 myLocationButtonEnabled: true,
                 compassEnabled: true,
                 zoomControlsEnabled: false,
@@ -5330,11 +5802,17 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             padding: const EdgeInsets.only(left: 12, top: 8),
             child: CircleAction(
               icon: Icons.person_rounded,
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute(
+              onTap: () async {
+                await Navigator.of(context).push(
+                  MaterialPageRoute(
                     builder: (_) => AccountDrawerScreen(
-                        displayName: widget.firstName, appVersion: '1.2.0')),
-              ),
+                      displayName: widget.firstName,
+                      appVersion: '1.2.0',
+                    ),
+                  ),
+                );
+                await _loadMetroTrainMarkerPreference();
+              },
             ),
           ),
         )),
@@ -6093,12 +6571,29 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                       }
                                     }
 
+                                    // Keep the onboard view focused on the portion of this line
+                                    // that belongs to the selected journey. In particular, do not
+                                    // show stations beyond the next transfer or destination.
+                                    final int segmentTargetIdx =
+                                        routeTargetIdx != -1
+                                            ? routeTargetIdx
+                                            : (nextRouteIdx != -1
+                                                ? nextRouteIdx
+                                                : currentIdx);
+                                    final int segmentStart = math.min(
+                                      currentIdx,
+                                      segmentTargetIdx,
+                                    );
+                                    final int segmentEnd = math.max(
+                                      currentIdx,
+                                      segmentTargetIdx,
+                                    );
+                                    final List<MetroStop> journeyStops = stops
+                                        .sublist(segmentStart, segmentEnd + 1);
+                                    final int journeyCurrentIndex =
+                                        currentIdx - segmentStart;
                                     final MetroStop directionStop =
-                                        routeTargetIdx == -1
-                                            ? (forward
-                                                ? stops.last
-                                                : stops.first)
-                                            : stops[routeTargetIdx];
+                                        stops[segmentTargetIdx];
                                     final String lineKey = _cap(rawKey);
                                     final Color lineColor = _colorFor(rawKey);
                                     final String dirEn =
@@ -6106,33 +6601,41 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                                     final String dirAr =
                                         'إلى ${directionStop.nameAr}';
 
-                                    await showOnboardDisplay(
-                                      context,
-                                      stops: stops,
-                                      currentIndex: currentIdx,
-                                      lineKey: lineKey, // e.g. "Blue"
-                                      lineColor: lineColor, // mapped color
-                                      directionNameEn: dirEn,
-                                      directionNameAr: dirAr,
-                                      etaToNext: Duration(
-                                        seconds:
-                                            (_etaSecondsMetro(uiPos: _lastFixLL)
-                                                    as num)
-                                                .round(),
-                                      ),
-                                      isRTL: Localizations.localeOf(context)
-                                              .languageCode ==
-                                          'ar',
-                                      forward: forward,
-                                      nextStationOverride:
-                                          _metroNextName, // keeps sheet in sync with banner
-
-                                      // optional next‑stop actions (wire to your nav state)
-                                      alightHere: _metroAlightAtNext == true,
-                                      transferHere: _transferAtNext == true,
-                                      transferToLineKey:
-                                          _transferToLineKey, // e.g., "blue"
-                                    );
+                                    final initialData =
+                                        _buildOnboardDisplayData();
+                                    if (initialData == null) return;
+                                    final updates = ValueNotifier(initialData);
+                                    _onboardDisplayUpdates = updates;
+                                    try {
+                                      await showOnboardDisplay(
+                                        context,
+                                        stops: journeyStops,
+                                        currentIndex: journeyCurrentIndex,
+                                        lineKey: lineKey, // e.g. "Blue"
+                                        lineColor: lineColor, // mapped color
+                                        directionNameEn: dirEn,
+                                        directionNameAr: dirAr,
+                                        etaToNext: Duration(
+                                          seconds: (_etaSecondsForUI() as num)
+                                              .round(),
+                                        ),
+                                        isRTL: Localizations.localeOf(context)
+                                                .languageCode ==
+                                            'ar',
+                                        forward: forward,
+                                        nextStationOverride: _metroNextName,
+                                        alightHere: _metroAlightAtNext,
+                                        transferHere: _transferAtNext,
+                                        transferToLineKey: _transferToLineKey,
+                                        liveData: updates,
+                                      );
+                                    } finally {
+                                      if (identical(
+                                          _onboardDisplayUpdates, updates)) {
+                                        _onboardDisplayUpdates = null;
+                                        updates.dispose();
+                                      }
+                                    }
                                   },
                                   child: _pill(
                                     Icons.directions_subway_filled,
@@ -6728,6 +7231,36 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+        if (kDebugMode && !_navigating)
+          Positioned(
+            left: 12,
+            bottom: 180,
+            child: FloatingActionButton.extended(
+              heroTag: 'metroTrainPinPreview',
+              backgroundColor: const Color(0xFF163B5E),
+              foregroundColor: Colors.white,
+              onPressed: _toggleMetroTrainPinPreview,
+              icon: Icon(_debugTrainPinVisible
+                  ? Icons.visibility_off_rounded
+                  : Icons.train_rounded),
+              label: Text(_debugTrainPinVisible
+                  ? 'Hide Train Pin'
+                  : 'Preview Train Pins'),
+            ),
+          ),
+        if (kDebugMode && !_navigating)
+          Positioned(
+            left: 12,
+            bottom: 120,
+            child: FloatingActionButton.extended(
+              heroTag: 'stationPulsePreview',
+              backgroundColor: const Color(0xFF163B5E),
+              foregroundColor: Colors.white,
+              onPressed: _showStationPulsePreview,
+              icon: const Icon(Icons.preview_rounded),
+              label: const Text('Preview Station Pulse'),
+            ),
+          ),
         if (_navigating && !_followEnabled)
           Positioned(
             left: 12,

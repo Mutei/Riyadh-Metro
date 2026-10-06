@@ -284,14 +284,14 @@ const List<Map<String, dynamic>> blueStations = [
   {
     'name': 'Alinma Bank',
     'nameAr': 'مصرف الإنماء',
-    'lat': 24.70352714676529,
-    'lng': 46.68017543626166
+    'lat': 24.702992969615824,
+    'lng': 46.68041695160367
   },
   {
     'name': 'Al Bilad Bank',
     'nameAr': 'بنك البلاد',
-    'lat': 24.69667137736483,
-    'lng': 46.68369783505113
+    'lat': 24.696250380041704,
+    'lng': 46.683904553162755
   },
   {
     'name': 'King Fahd Library',

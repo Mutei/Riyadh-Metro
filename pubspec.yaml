@@ -95,6 +95,7 @@ flutter:
   assets:
     - assets/logo/
     - assets/fonts/
+    - assets/markers/
     - lib/language/en.json
     - lib/language/ar.json
 

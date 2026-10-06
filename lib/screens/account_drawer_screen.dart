@@ -6,6 +6,7 @@ import 'package:darb/widgets/drawer_tile.dart';
 import 'package:darb/utils/logout_dialog.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../localization/language_constants.dart';
+import '../services/metro_train_marker_preferences.dart';
 
 import 'chat_bot_screen.dart';
 import 'language_screen.dart';
@@ -224,6 +225,12 @@ class AccountDrawerScreen extends StatelessWidget {
                     : getTranslated(context, 'drawer.themeSubtitle'),
                 onTap: () => _showThemeBottomSheet(context),
               ),
+              DrawerTile(
+                icon: Icons.train_rounded,
+                title: 'Metro train marker',
+                subtitle: 'Choose classic or line-specific trains',
+                onTap: () => _showMetroTrainMarkerBottomSheet(context),
+              ),
 
               DrawerTile(
                 icon: Icons.my_location_rounded,
@@ -324,6 +331,134 @@ class AccountDrawerScreen extends StatelessWidget {
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
       builder: (_) => const _ThemePickerSheet(),
+    );
+  }
+
+  void _showMetroTrainMarkerBottomSheet(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    showModalBottomSheet(
+      context: context,
+      showDragHandle: true,
+      backgroundColor: theme.inputDecorationTheme.fillColor ?? cs.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (_) => const _MetroTrainMarkerPickerSheet(),
+    );
+  }
+}
+
+class _MetroTrainMarkerPickerSheet extends StatefulWidget {
+  const _MetroTrainMarkerPickerSheet();
+
+  @override
+  State<_MetroTrainMarkerPickerSheet> createState() =>
+      _MetroTrainMarkerPickerSheetState();
+}
+
+class _MetroTrainMarkerPickerSheetState
+    extends State<_MetroTrainMarkerPickerSheet> {
+  MetroTrainMarkerStyle? _selected;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    final style = await MetroTrainMarkerPreferences.load();
+    if (mounted) setState(() => _selected = style);
+  }
+
+  Future<void> _apply(MetroTrainMarkerStyle style) async {
+    await MetroTrainMarkerPreferences.save(style);
+    if (!mounted) return;
+    setState(() => _selected = style);
+    Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final selected = _selected ?? MetroTrainMarkerStyle.classic;
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Metro train marker',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.w800,
+                color: cs.onSurface,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'Choose how your position appears during a metro trip.',
+              style: theme.textTheme.bodyMedium?.copyWith(
+                color: cs.onSurface.withOpacity(.68),
+              ),
+            ),
+            const SizedBox(height: 12),
+            _option(
+              context,
+              value: MetroTrainMarkerStyle.classic,
+              groupValue: selected,
+              asset: 'assets/markers/metro_train_topdown.png',
+              title: 'Classic train pin',
+              subtitle: 'Use the original train marker for every line.',
+            ),
+            _option(
+              context,
+              value: MetroTrainMarkerStyle.lineSpecific,
+              groupValue: selected,
+              asset: 'assets/markers/metro_train_blue.png',
+              title: 'Line-specific trains',
+              subtitle: 'Use the Riyadh Metro vehicle for the active line.',
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _option(
+    BuildContext context, {
+    required MetroTrainMarkerStyle value,
+    required MetroTrainMarkerStyle groupValue,
+    required String asset,
+    required String title,
+    required String subtitle,
+  }) {
+    final theme = Theme.of(context);
+    final selected = value == groupValue;
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      onTap: () => _apply(value),
+      leading: Container(
+        width: 54,
+        height: 54,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(14),
+        ),
+        child: Image.asset(asset, fit: BoxFit.contain),
+      ),
+      title: Text(title, style: const TextStyle(fontWeight: FontWeight.w700)),
+      subtitle: Text(subtitle),
+      trailing: Radio<MetroTrainMarkerStyle>(
+        value: value,
+        groupValue: groupValue,
+        onChanged: (_) => _apply(value),
+      ),
     );
   }
 }
