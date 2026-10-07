@@ -573,6 +573,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   final Map<String, BitmapDescriptor> _metroTrainIcons = {};
   final Map<String, ui.Image> _metroTrainArtwork = {};
   MetroTrainMarkerStyle _metroTrainMarkerStyle = MetroTrainMarkerStyle.classic;
+  double? _directionalTrainBearing;
   ValueNotifier<OnboardDisplayData>? _onboardDisplayUpdates;
   Marker? _userArrowMarker; // updated every fix
   bool _debugTrainPinVisible = false;
@@ -1020,26 +1021,73 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _navArrowIcon = BitmapDescriptor.fromBytes(bytes!.buffer.asUint8List());
   }
 
-  String _metroTrainAsset(String lineKey,
-      {required MetroTrainMarkerStyle style}) {
+  static const _directionalTrainKeys = [
+    'n',
+    'ne',
+    'e',
+    'se',
+    's',
+    'sw',
+    'w',
+    'nw',
+  ];
+
+  String _metroTrainAsset(
+    String lineKey, {
+    required MetroTrainMarkerStyle style,
+    int directionIndex = 0,
+  }) {
     if (style == MetroTrainMarkerStyle.classic) {
       return 'assets/markers/metro_train_topdown.png';
     }
-    switch (lineKey.toLowerCase()) {
+    final normalizedLine = lineKey.toLowerCase();
+    const supported = {'yellow', 'blue', 'red', 'purple', 'orange', 'green'};
+    if (style == MetroTrainMarkerStyle.directional3d &&
+        supported.contains(normalizedLine)) {
+      final direction = _directionalTrainKeys[
+          directionIndex.clamp(0, _directionalTrainKeys.length - 1)];
+      return 'assets/markers/directional/'
+          'metro_train_3d_${normalizedLine}_$direction.png';
+    }
+    switch (normalizedLine) {
       case 'yellow':
       case 'blue':
       case 'red':
       case 'purple':
       case 'orange':
       case 'green':
-        return 'assets/markers/metro_train_${lineKey.toLowerCase()}.png';
+        return 'assets/markers/metro_train_$normalizedLine.png';
       default:
         return 'assets/markers/metro_train_topdown.png';
     }
   }
 
-  String _metroTrainIconKey(String lineKey, MetroTrainMarkerStyle style) =>
-      '${style.name}:${lineKey.toLowerCase()}';
+  String _metroTrainIconKey(
+    String lineKey,
+    MetroTrainMarkerStyle style, {
+    int directionIndex = 0,
+  }) {
+    final suffix = style == MetroTrainMarkerStyle.directional3d
+        ? ':${directionIndex.clamp(0, 7)}'
+        : '';
+    return '${style.name}:${lineKey.toLowerCase()}$suffix';
+  }
+
+  int _directionIndexForBearing(double bearing) =>
+      ((((bearing % 360) + 360 + 22.5) % 360) ~/ 45).clamp(0, 7).toInt();
+
+  double _smoothDirectionalBearing(double target) {
+    final normalized = ((target % 360) + 360) % 360;
+    final current = _directionalTrainBearing;
+    if (current == null) {
+      _directionalTrainBearing = normalized;
+      return normalized;
+    }
+    final delta = ((normalized - current + 540) % 360) - 180;
+    final smoothed = (current + delta * .32 + 360) % 360;
+    _directionalTrainBearing = smoothed;
+    return smoothed;
+  }
 
   Future<ui.Image> _loadMetroTrainArtwork(String asset) async {
     final cached = _metroTrainArtwork[asset];
@@ -1052,65 +1100,113 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     return frame.image;
   }
 
-  Future<void> _prepareMetroTrainIcons() async {
+  Future<void> _prepareMetroTrainIcons({
+    Iterable<MetroTrainMarkerStyle>? styles,
+    Iterable<String>? lineKeys,
+  }) async {
     final dpr = MediaQueryData.fromWindow(ui.window).devicePixelRatio;
     // Keep the vehicle prominent at normal map zoom without hiding stations.
     final int size = (68.0 * dpr).round();
-    for (final entry in metroLineColors.entries) {
+    final requestedStyles = styles?.toSet() ?? {_metroTrainMarkerStyle};
+    final requestedLines = lineKeys
+        ?.map((line) => line.toLowerCase())
+        .where(metroLineColors.containsKey)
+        .toSet();
+    final lineEntries = requestedLines == null || requestedLines.isEmpty
+        ? metroLineColors.entries
+        : metroLineColors.entries
+            .where((entry) => requestedLines.contains(entry.key.toLowerCase()));
+    for (final entry in lineEntries) {
       final String key = entry.key.toLowerCase();
-      for (final style in MetroTrainMarkerStyle.values) {
-        final iconKey = _metroTrainIconKey(key, style);
-        if (_metroTrainIcons.containsKey(iconKey)) continue;
+      for (final style in requestedStyles) {
+        final directionIndexes = style == MetroTrainMarkerStyle.directional3d
+            ? List<int>.generate(8, (index) => index)
+            : const [0];
+        for (final directionIndex in directionIndexes) {
+          final iconKey = _metroTrainIconKey(
+            key,
+            style,
+            directionIndex: directionIndex,
+          );
+          if (_metroTrainIcons.containsKey(iconKey)) continue;
 
-        final trainArtwork =
-            await _loadMetroTrainArtwork(_metroTrainAsset(key, style: style));
-        final Color lineColor = entry.value;
-        final recorder = ui.PictureRecorder();
-        final canvas = Canvas(
-          recorder,
-          Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()),
-        );
-        final paint = Paint()..isAntiAlias = true;
-        final center = Offset(size / 2.0, size / 2.0);
+          final artworkAsset = _metroTrainAsset(
+            key,
+            style: style,
+            directionIndex: directionIndex,
+          );
+          final trainArtwork = await _loadMetroTrainArtwork(artworkAsset);
+          final Color lineColor = entry.value;
+          final recorder = ui.PictureRecorder();
+          final canvas = Canvas(
+            recorder,
+            Rect.fromLTWH(0, 0, size.toDouble(), size.toDouble()),
+          );
+          final paint = Paint()..isAntiAlias = true;
+          final center = Offset(size / 2.0, size / 2.0);
 
-        // Concentric rings create the line-colored navigation halo.
-        paint.color = lineColor.withValues(alpha: .18);
-        canvas.drawCircle(center, size * .48, paint);
-        paint
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = size * .022
-          ..color = lineColor.withValues(alpha: .46);
-        canvas.drawCircle(center, size * .37, paint);
+          // Concentric rings create the line-colored navigation halo.
+          paint.color = lineColor.withValues(alpha: .18);
+          canvas.drawCircle(center, size * .48, paint);
+          paint
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = size * .022
+            ..color = lineColor.withValues(alpha: .46);
+          canvas.drawCircle(center, size * .37, paint);
 
-        final isClassic = style == MetroTrainMarkerStyle.classic;
-        final source = isClassic
-            ? Rect.fromLTWH(
-                trainArtwork.width * .345,
-                trainArtwork.height * .02,
-                trainArtwork.width * .31,
-                trainArtwork.height * .96,
-              )
-            : Rect.fromLTWH(
-                trainArtwork.width * .08,
-                trainArtwork.height * .05,
-                trainArtwork.width * .84,
-                trainArtwork.height * .90,
-              );
-        final destination = Rect.fromCenter(
-          center: center,
-          width: size * (isClassic ? .28 : .54),
-          height: size * (isClassic ? .74 : .68),
-        );
-        paint
-          ..style = PaintingStyle.fill
-          ..color = Colors.white;
-        canvas.drawImageRect(trainArtwork, source, destination, paint);
+          final isClassic = style == MetroTrainMarkerStyle.classic;
+          final isDirectional = style == MetroTrainMarkerStyle.directional3d;
+          final source = isClassic
+              ? Rect.fromLTWH(
+                  trainArtwork.width * .345,
+                  trainArtwork.height * .02,
+                  trainArtwork.width * .31,
+                  trainArtwork.height * .96,
+                )
+              : isDirectional
+                  ? Rect.fromLTWH(
+                      0,
+                      0,
+                      trainArtwork.width.toDouble(),
+                      trainArtwork.height.toDouble(),
+                    )
+                  : Rect.fromLTWH(
+                      trainArtwork.width * .08,
+                      trainArtwork.height * .05,
+                      trainArtwork.width * .84,
+                      trainArtwork.height * .90,
+                    );
+          final destination = Rect.fromCenter(
+            center: center,
+            width: size *
+                (isClassic
+                    ? .28
+                    : isDirectional
+                        ? .94
+                        : .54),
+            height: size *
+                (isClassic
+                    ? .74
+                    : isDirectional
+                        ? .94
+                        : .68),
+          );
+          paint
+            ..style = PaintingStyle.fill
+            ..color = Colors.white;
+          canvas.drawImageRect(trainArtwork, source, destination, paint);
 
-        final image = await recorder.endRecording().toImage(size, size);
-        final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
-        if (bytes != null) {
-          _metroTrainIcons[iconKey] =
-              BitmapDescriptor.fromBytes(bytes.buffer.asUint8List());
+          final image = await recorder.endRecording().toImage(size, size);
+          final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+          if (bytes != null) {
+            _metroTrainIcons[iconKey] =
+                BitmapDescriptor.fromBytes(bytes.buffer.asUint8List());
+          }
+          image.dispose();
+          if (isDirectional) {
+            _metroTrainArtwork.remove(artworkAsset);
+            trainArtwork.dispose();
+          }
         }
       }
     }
@@ -1547,7 +1643,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
     await _prepareNavArrowIcon();
     if (_tripMode == _TripMode.metro) {
-      await _prepareMetroTrainIcons();
+      await _prepareMetroTrainIcons(lineKeys: _chosenLines);
     }
 
     setState(() {
@@ -2136,10 +2232,16 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               _metroSeq.isNotEmpty
           ? _metroSeq[_metroLeg.clamp(0, _metroSeq.length - 1).toInt()].lineKey
           : _metroCurLineKey;
+      final directionalMarker = _tripMode == _TripMode.metro &&
+          _metroTrainMarkerStyle == MetroTrainMarkerStyle.directional3d;
+      final markerBearing =
+          directionalMarker ? _smoothDirectionalBearing(brg) : brg;
+      final directionIndex = _directionIndexForBearing(markerBearing);
       final BitmapDescriptor? navigationIcon = _tripMode == _TripMode.metro
           ? _metroTrainIcons[_metroTrainIconKey(
               activeMetroLineKey ?? 'blue',
               _metroTrainMarkerStyle,
+              directionIndex: directionIndex,
             )]
           : _navArrowIcon;
       if (navigationIcon != null) {
@@ -2149,7 +2251,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           icon: navigationIcon,
           anchor: const Offset(0.5, 0.5),
           flat: true,
-          rotation: brg,
+          rotation: directionalMarker ? 0 : brg,
           zIndex: 4000,
         );
       }
@@ -3255,6 +3357,19 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     final segmentEnd = math.max(currentIndex, targetIndex);
     final journeyStops = stops.sublist(segmentStart, segmentEnd + 1);
     final directionStop = stops[targetIndex];
+    double segmentProgress = 0;
+    if (leg < _metroSeq.length - 1) {
+      final next = _metroSeq[leg + 1];
+      final legPolyline =
+          _slicePolylineByStations(current.lineKey, current.index, next.index);
+      final totalMeters = _polylineLengthMeters(legPolyline);
+      if (totalMeters > 0) {
+        final position = _lastFixLL ?? _lastNavPoint ?? current.pos;
+        final remainingMeters = _remainingOnLegMeters(position, legPolyline);
+        segmentProgress =
+            (1 - (remainingMeters / totalMeters)).clamp(0.0, 1.0).toDouble();
+      }
+    }
 
     return OnboardDisplayData(
       stops: journeyStops,
@@ -3275,6 +3390,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       prepareTransferStopsAway: _transferSoonStopsAway,
       prepareTransferToLineKey: _transferSoonLineKey,
       prepareAtStationName: _transferSoonStationName,
+      segmentProgress: segmentProgress,
+      speedKmh: _navSpeedMps.isFinite ? _navSpeedMps * 3.6 : null,
     );
   }
 
@@ -5465,7 +5582,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   /// Temporary debug-only preview for reviewing the onboard sheet off-metro.
   /// It deliberately does not write trip state or start location tracking.
   Future<void> _showStationPulsePreview() async {
-    await _prepareMetroTrainIcons();
+    await _prepareMetroTrainIcons(lineKeys: const ['blue']);
     if (!mounted) return;
 
     final Marker? markerBeforePreview = _userArrowMarker;
@@ -5534,129 +5651,152 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       return;
     }
 
-    await _prepareMetroTrainIcons();
+    await _prepareMetroTrainIcons(styles: MetroTrainMarkerStyle.values);
     if (!mounted) return;
 
-    final options = <({String key, String title, String asset, Color color})>[
+    final options = <({
+      String lineKey,
+      String title,
+      String asset,
+      Color color,
+      MetroTrainMarkerStyle style,
+      int directionIndex,
+    })>[
       (
-        key: 'classic',
+        lineKey: 'blue',
         title: 'Classic',
         asset: 'assets/markers/metro_train_topdown.png',
         color: const Color(0xFF2E8DF6),
+        style: MetroTrainMarkerStyle.classic,
+        directionIndex: 0,
       ),
-      (
-        key: 'yellow',
-        title: 'Yellow',
-        asset: 'assets/markers/metro_train_yellow.png',
-        color: metroLineColors['yellow'] ?? Colors.amber,
-      ),
-      (
-        key: 'blue',
-        title: 'Blue',
-        asset: 'assets/markers/metro_train_blue.png',
-        color: metroLineColors['blue'] ?? Colors.blue,
-      ),
-      (
-        key: 'red',
-        title: 'Red',
-        asset: 'assets/markers/metro_train_red.png',
-        color: metroLineColors['red'] ?? Colors.red,
-      ),
-      (
-        key: 'purple',
-        title: 'Purple',
-        asset: 'assets/markers/metro_train_purple.png',
-        color: metroLineColors['purple'] ?? Colors.purple,
-      ),
-      (
-        key: 'orange',
-        title: 'Orange',
-        asset: 'assets/markers/metro_train_orange.png',
-        color: metroLineColors['orange'] ?? Colors.orange,
-      ),
-      (
-        key: 'green',
-        title: 'Green',
-        asset: 'assets/markers/metro_train_green.png',
-        color: metroLineColors['green'] ?? Colors.green,
-      ),
+      for (final line in const [
+        'blue',
+        'yellow',
+        'purple',
+        'red',
+        'green',
+        'orange',
+      ])
+        (
+          lineKey: line,
+          title: '${_cap(line)} standard',
+          asset: 'assets/markers/metro_train_$line.png',
+          color: metroLineColors[line] ?? Colors.blue,
+          style: MetroTrainMarkerStyle.lineSpecific,
+          directionIndex: 0,
+        ),
+      for (final line in const [
+        'blue',
+        'yellow',
+        'purple',
+        'red',
+        'green',
+        'orange',
+      ])
+        for (var directionIndex = 0;
+            directionIndex < _directionalTrainKeys.length;
+            directionIndex++)
+          (
+            lineKey: line,
+            title:
+                '${_cap(line)} ${_directionalTrainKeys[directionIndex].toUpperCase()}',
+            asset: _metroTrainAsset(
+              line,
+              style: MetroTrainMarkerStyle.directional3d,
+              directionIndex: directionIndex,
+            ),
+            color: metroLineColors[line] ?? Colors.blue,
+            style: MetroTrainMarkerStyle.directional3d,
+            directionIndex: directionIndex,
+          ),
     ];
-    final selectedKey = await showModalBottomSheet<String>(
+    final selectedIndex = await showModalBottomSheet<int>(
       context: context,
       showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                'Preview metro train pins',
-                style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
+      isScrollControlled: true,
+      builder: (sheetContext) => FractionallySizedBox(
+        heightFactor: .88,
+        child: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Preview metro train pins',
+                  style: Theme.of(sheetContext).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                const Text(
+                  'Classic, standard line trains, and all 48 directional 3D variants.',
+                ),
+                const SizedBox(height: 14),
+                Expanded(
+                  child: GridView.builder(
+                    itemCount: options.length,
+                    gridDelegate:
+                        const SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: 3,
+                      mainAxisSpacing: 10,
+                      crossAxisSpacing: 10,
+                      childAspectRatio: .92,
                     ),
-              ),
-              const SizedBox(height: 4),
-              const Text('Choose a vehicle to place it at the map center.'),
-              const SizedBox(height: 14),
-              GridView.count(
-                crossAxisCount: 4,
-                shrinkWrap: true,
-                mainAxisSpacing: 10,
-                crossAxisSpacing: 10,
-                childAspectRatio: .88,
-                children: [
-                  for (final option in options)
-                    InkWell(
-                      borderRadius: BorderRadius.circular(14),
-                      onTap: () => Navigator.of(sheetContext).pop(option.key),
-                      child: Ink(
-                        decoration: BoxDecoration(
-                          color: option.color.withValues(alpha: .10),
-                          borderRadius: BorderRadius.circular(14),
-                          border: Border.all(
-                            color: option.color.withValues(alpha: .35),
+                    itemBuilder: (context, index) {
+                      final option = options[index];
+                      return InkWell(
+                        borderRadius: BorderRadius.circular(14),
+                        onTap: () => Navigator.of(sheetContext).pop(index),
+                        child: Ink(
+                          decoration: BoxDecoration(
+                            color: option.color.withValues(alpha: .10),
+                            borderRadius: BorderRadius.circular(14),
+                            border: Border.all(
+                              color: option.color.withValues(alpha: .35),
+                            ),
+                          ),
+                          child: Column(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              Expanded(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(8),
+                                  child: Image.asset(option.asset),
+                                ),
+                              ),
+                              Padding(
+                                padding: const EdgeInsets.only(bottom: 8),
+                                child: Text(
+                                  option.title,
+                                  style: Theme.of(sheetContext)
+                                      .textTheme
+                                      .labelMedium
+                                      ?.copyWith(fontWeight: FontWeight.w700),
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                        child: Column(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Expanded(
-                              child: Padding(
-                                padding: const EdgeInsets.all(8),
-                                child: Image.asset(option.asset),
-                              ),
-                            ),
-                            Padding(
-                              padding: const EdgeInsets.only(bottom: 8),
-                              child: Text(
-                                option.title,
-                                style: Theme.of(sheetContext)
-                                    .textTheme
-                                    .labelMedium
-                                    ?.copyWith(fontWeight: FontWeight.w700),
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ],
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
         ),
       ),
     );
-    if (selectedKey == null || !mounted) return;
+    if (selectedIndex == null || !mounted) return;
 
-    final previewStyle = selectedKey == 'classic'
-        ? MetroTrainMarkerStyle.classic
-        : MetroTrainMarkerStyle.lineSpecific;
-    final previewLine = selectedKey == 'classic' ? 'blue' : selectedKey;
-    final previewIcon =
-        _metroTrainIcons[_metroTrainIconKey(previewLine, previewStyle)];
+    final selected = options[selectedIndex];
+    final previewIcon = _metroTrainIcons[_metroTrainIconKey(
+      selected.lineKey,
+      selected.style,
+      directionIndex: selected.directionIndex,
+    )];
     if (previewIcon == null) return;
 
     setState(() {
@@ -5667,7 +5807,8 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
         icon: previewIcon,
         anchor: const Offset(0.5, 0.5),
         flat: true,
-        rotation: 20,
+        rotation:
+            selected.style == MetroTrainMarkerStyle.directional3d ? 0 : 20,
         zIndex: 4000,
       );
     });
@@ -7258,7 +7399,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
               foregroundColor: Colors.white,
               onPressed: _showStationPulsePreview,
               icon: const Icon(Icons.preview_rounded),
-              label: const Text('Preview Station Pulse'),
+              label: const Text('Preview Onboard Display'),
             ),
           ),
         if (_navigating && !_followEnabled)

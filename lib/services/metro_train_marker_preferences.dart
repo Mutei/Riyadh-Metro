@@ -1,6 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
-enum MetroTrainMarkerStyle { classic, lineSpecific }
+enum MetroTrainMarkerStyle { classic, lineSpecific, directional3d }
 
 class MetroTrainMarkerPreferences {
   MetroTrainMarkerPreferences._();
@@ -9,16 +9,20 @@ class MetroTrainMarkerPreferences {
 
   static Future<MetroTrainMarkerStyle> load() async {
     final preferences = await SharedPreferences.getInstance();
-    return preferences.getString(_key) == 'line_specific'
-        ? MetroTrainMarkerStyle.lineSpecific
-        : MetroTrainMarkerStyle.classic;
+    return switch (preferences.getString(_key)) {
+      'line_specific' => MetroTrainMarkerStyle.lineSpecific,
+      'directional_3d' => MetroTrainMarkerStyle.directional3d,
+      _ => MetroTrainMarkerStyle.classic,
+    };
   }
 
   static Future<void> save(MetroTrainMarkerStyle style) async {
     final preferences = await SharedPreferences.getInstance();
-    await preferences.setString(
-      _key,
-      style == MetroTrainMarkerStyle.lineSpecific ? 'line_specific' : 'classic',
-    );
+    final value = switch (style) {
+      MetroTrainMarkerStyle.classic => 'classic',
+      MetroTrainMarkerStyle.lineSpecific => 'line_specific',
+      MetroTrainMarkerStyle.directional3d => 'directional_3d',
+    };
+    await preferences.setString(_key, value);
   }
 }

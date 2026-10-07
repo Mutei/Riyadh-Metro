@@ -33,6 +33,13 @@ android/app/src/main/AndroidManifest.xml
 functions/node_modules/
 android/app/google-services.json
 assets
+!assets/
+assets/*
+!assets/markers/
+assets/markers/*
+!assets/markers/metro_train_directions_*.png
+!assets/markers/directional/
+!assets/markers/directional/*.png
 .pub/
 /build/
 .android/

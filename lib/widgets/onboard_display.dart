@@ -3,6 +3,9 @@ import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../services/metro_train_marker_preferences.dart';
+import '../services/onboard_display_preferences.dart';
+
 class MetroStop {
   final String id;
   final String nameEn;
@@ -47,6 +50,8 @@ class OnboardDisplayData {
     this.prepareTransferStopsAway = 0,
     this.prepareTransferToLineKey,
     this.prepareAtStationName,
+    this.segmentProgress = .35,
+    this.speedKmh,
   });
 
   final List<MetroStop> stops;
@@ -73,6 +78,8 @@ class OnboardDisplayData {
   final int prepareTransferStopsAway;
   final String? prepareTransferToLineKey;
   final String? prepareAtStationName;
+  final double segmentProgress;
+  final double? speedKmh;
 }
 
 /// Launches the onboard (bottom‑sheet) display.
@@ -141,6 +148,9 @@ Future<void> showOnboardDisplay(
     prepareTransferToLineKey: prepareTransferToLineKey,
     prepareAtStationName: prepareAtStationName,
   );
+  final displayStyle = await OnboardDisplayPreferences.load();
+  final trainMarkerStyle = await MetroTrainMarkerPreferences.load();
+  if (!context.mounted) return;
 
   await showModalBottomSheet(
     context: context,
@@ -165,10 +175,18 @@ Future<void> showOnboardDisplay(
           border: Border.all(color: theme.dividerColor.withValues(alpha: .42)),
         ),
         child: liveData == null
-            ? _OnboardDisplayBody(data: initialData)
+            ? _OnboardDisplayBody(
+                data: initialData,
+                displayStyle: displayStyle,
+                trainMarkerStyle: trainMarkerStyle,
+              )
             : ValueListenableBuilder<OnboardDisplayData>(
                 valueListenable: liveData,
-                builder: (_, data, __) => _OnboardDisplayBody(data: data),
+                builder: (_, data, __) => _OnboardDisplayBody(
+                  data: data,
+                  displayStyle: displayStyle,
+                  trainMarkerStyle: trainMarkerStyle,
+                ),
               ),
       );
     },
@@ -176,20 +194,774 @@ Future<void> showOnboardDisplay(
 }
 
 class _OnboardDisplayBody extends StatelessWidget {
-  const _OnboardDisplayBody({required this.data});
+  const _OnboardDisplayBody({
+    required this.data,
+    required this.displayStyle,
+    required this.trainMarkerStyle,
+  });
 
   final OnboardDisplayData data;
+  final OnboardDisplayStyle displayStyle;
+  final MetroTrainMarkerStyle trainMarkerStyle;
 
   @override
   Widget build(BuildContext context) {
+    final panel = switch (displayStyle) {
+      OnboardDisplayStyle.stationPulse => _OnboardPanel.fromData(data),
+      OnboardDisplayStyle.originalMotion => _OriginalMotionPanel(
+          data: data,
+          trainMarkerStyle: trainMarkerStyle,
+        ),
+      OnboardDisplayStyle.trackFocus => _TrackFocusPanel(
+          data: data,
+          trainMarkerStyle: trainMarkerStyle,
+        ),
+      OnboardDisplayStyle.liveCarriage => _LiveCarriagePanel(
+          data: data,
+          trainMarkerStyle: trainMarkerStyle,
+        ),
+    };
     return Directionality(
       textDirection: data.isRTL ? TextDirection.rtl : TextDirection.ltr,
-      child: _OnboardPanel.fromData(data),
+      child: panel,
     );
   }
 }
 
 enum _ViewMode { segment, fullLine, nextLine }
+
+String _motionTrainAsset(
+  String lineKey,
+  MetroTrainMarkerStyle markerStyle, {
+  bool forward = true,
+}) {
+  if (markerStyle == MetroTrainMarkerStyle.classic) {
+    return 'assets/markers/metro_train_topdown.png';
+  }
+  final key = lineKey.toLowerCase();
+  const supported = {'yellow', 'blue', 'red', 'purple', 'orange', 'green'};
+  if (markerStyle == MetroTrainMarkerStyle.directional3d &&
+      supported.contains(key)) {
+    final direction = forward ? 'e' : 'w';
+    return 'assets/markers/directional/metro_train_3d_${key}_$direction.png';
+  }
+  return supported.contains(key)
+      ? 'assets/markers/metro_train_$key.png'
+      : 'assets/markers/metro_train_topdown.png';
+}
+
+String _motionStationName(OnboardDisplayData data, MetroStop stop) =>
+    data.isRTL ? stop.nameAr : stop.nameEn;
+
+List<MetroStop> _upcomingStops(OnboardDisplayData data) {
+  if (data.stops.isEmpty) return const [];
+  final current = data.currentIndex.clamp(0, data.stops.length - 1).toInt();
+  final ordered = data.forward
+      ? data.stops.sublist(current)
+      : data.stops.sublist(0, current + 1).reversed.toList();
+  if (ordered.length <= 1) return ordered;
+  return ordered.skip(1).toList();
+}
+
+String _motionEta(Duration? eta, bool rtl) {
+  if (eta == null) return '--';
+  final minutes = math.max(1, (eta.inSeconds / 60).ceil());
+  return rtl ? '$minutes دقيقة' : '$minutes min';
+}
+
+class _MotionEtaText extends StatefulWidget {
+  const _MotionEtaText({
+    required this.eta,
+    required this.rtl,
+    required this.style,
+  });
+
+  final Duration? eta;
+  final bool rtl;
+  final TextStyle? style;
+
+  @override
+  State<_MotionEtaText> createState() => _MotionEtaTextState();
+}
+
+class _MotionEtaTextState extends State<_MotionEtaText> {
+  Timer? _timer;
+  DateTime? _updatedAt;
+  Duration? _base;
+
+  @override
+  void initState() {
+    super.initState();
+    _reset();
+  }
+
+  @override
+  void didUpdateWidget(covariant _MotionEtaText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.eta != widget.eta) _reset();
+  }
+
+  void _reset() {
+    _base = widget.eta;
+    _updatedAt = widget.eta == null ? null : DateTime.now();
+    _timer?.cancel();
+    if (widget.eta != null) {
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  Duration? get _remaining {
+    if (_base == null || _updatedAt == null) return null;
+    final value = _base! - DateTime.now().difference(_updatedAt!);
+    return value.isNegative ? Duration.zero : value;
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Text(
+        _motionEta(_remaining, widget.rtl),
+        style: widget.style,
+      );
+}
+
+class _MotionPanelShell extends StatelessWidget {
+  const _MotionPanelShell({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      top: false,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * .72,
+        ),
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(22, 10, 22, 24),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
+class _MotionHeader extends StatelessWidget {
+  const _MotionHeader({
+    required this.data,
+    this.showSpeed = false,
+  });
+
+  final OnboardDisplayData data;
+  final bool showSpeed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final muted = theme.colorScheme.onSurface.withValues(alpha: .64);
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        Container(
+          width: 10,
+          height: 58,
+          decoration: BoxDecoration(
+            color: data.lineColor,
+            borderRadius: BorderRadius.circular(8),
+            boxShadow: [
+              BoxShadow(
+                color: data.lineColor.withValues(alpha: .35),
+                blurRadius: 16,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 13),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '${data.isRTL ? 'الخط' : 'LINE'} ${data.lineKey.toUpperCase()}',
+                style: theme.textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: data.isRTL ? 0 : .8,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                data.isRTL
+                    ? (data.directionNameAr ?? '')
+                    : (data.directionNameEn ?? ''),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: muted,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+        if (showSpeed) ...[
+          Icon(Icons.speed_rounded, size: 20, color: muted),
+          const SizedBox(width: 5),
+          Text(
+            data.speedKmh == null
+                ? '-- km/h'
+                : '${data.speedKmh!.round()} km/h',
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(width: 14),
+        ],
+        Icon(Icons.schedule_rounded, color: muted),
+        const SizedBox(width: 6),
+        _MotionEtaText(
+          eta: data.etaToNext,
+          rtl: data.isRTL,
+          style: theme.textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w900,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _MotionNextCard extends StatelessWidget {
+  const _MotionNextCard({required this.data});
+
+  final OnboardDisplayData data;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final upcoming = _upcomingStops(data);
+    final next = upcoming.isNotEmpty
+        ? upcoming.first
+        : data.stops[data.currentIndex.clamp(0, data.stops.length - 1)];
+    final action = data.transferHere
+        ? (data.isRTL ? 'غيّر الخط هنا' : 'Change line here')
+        : data.alightHere
+            ? (data.isRTL ? 'انزل في المحطة التالية' : 'Alight at next station')
+            : null;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 13, 16, 14),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest.withValues(alpha: .32),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: theme.dividerColor.withValues(alpha: .6)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 5,
+            height: 54,
+            decoration: BoxDecoration(
+              color: data.lineColor,
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  action ?? (data.isRTL ? 'المحطة التالية' : 'NEXT STATION'),
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    color: theme.colorScheme.onSurface.withValues(alpha: .58),
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: data.isRTL ? 0 : 1.2,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  _motionStationName(data, next),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w900,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OriginalMotionPanel extends StatelessWidget {
+  const _OriginalMotionPanel({
+    required this.data,
+    required this.trainMarkerStyle,
+  });
+
+  final OnboardDisplayData data;
+  final MetroTrainMarkerStyle trainMarkerStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final upcoming = _upcomingStops(data).take(3).toList();
+    return _MotionPanelShell(
+      child: Column(
+        children: [
+          const _SheetHandle(),
+          const SizedBox(height: 20),
+          _MotionHeader(data: data),
+          const SizedBox(height: 26),
+          _AssetTrainTrack(
+            data: data,
+            stops: upcoming,
+            markerStyle: trainMarkerStyle,
+            compact: true,
+          ),
+          const SizedBox(height: 22),
+          _MotionNextCard(data: data),
+        ],
+      ),
+    );
+  }
+}
+
+class _TrackFocusPanel extends StatelessWidget {
+  const _TrackFocusPanel({
+    required this.data,
+    required this.trainMarkerStyle,
+  });
+
+  final OnboardDisplayData data;
+  final MetroTrainMarkerStyle trainMarkerStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final upcoming = _upcomingStops(data).take(3).toList();
+    return _MotionPanelShell(
+      child: Column(
+        children: [
+          const _SheetHandle(),
+          const SizedBox(height: 20),
+          _MotionHeader(data: data),
+          const SizedBox(height: 22),
+          Container(
+            padding: const EdgeInsets.fromLTRB(8, 18, 8, 14),
+            decoration: BoxDecoration(
+              color: Theme.of(context)
+                  .colorScheme
+                  .surfaceContainerHighest
+                  .withValues(alpha: .25),
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                color: Theme.of(context).dividerColor.withValues(alpha: .55),
+              ),
+            ),
+            child: _AssetTrainTrack(
+              data: data,
+              stops: upcoming,
+              markerStyle: trainMarkerStyle,
+              showTimes: true,
+            ),
+          ),
+          const SizedBox(height: 18),
+          _SegmentProgress(data: data, stopCount: upcoming.length),
+          const SizedBox(height: 18),
+          _MotionNextCard(data: data),
+        ],
+      ),
+    );
+  }
+}
+
+class _LiveCarriagePanel extends StatelessWidget {
+  const _LiveCarriagePanel({
+    required this.data,
+    required this.trainMarkerStyle,
+  });
+
+  final OnboardDisplayData data;
+  final MetroTrainMarkerStyle trainMarkerStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final upcoming = _upcomingStops(data).take(3).toList();
+    return _MotionPanelShell(
+      child: Column(
+        children: [
+          const _SheetHandle(),
+          const SizedBox(height: 20),
+          _MotionHeader(data: data, showSpeed: true),
+          const SizedBox(height: 26),
+          _CarriageTrack(
+            data: data,
+            stops: upcoming,
+            markerStyle: trainMarkerStyle,
+          ),
+          const SizedBox(height: 24),
+          _MotionNextCard(data: data),
+        ],
+      ),
+    );
+  }
+}
+
+class _SheetHandle extends StatelessWidget {
+  const _SheetHandle();
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 44,
+        height: 5,
+        decoration: BoxDecoration(
+          color: Theme.of(context).colorScheme.onSurface.withValues(alpha: .24),
+          borderRadius: BorderRadius.circular(9),
+        ),
+      );
+}
+
+class _AssetTrainTrack extends StatelessWidget {
+  const _AssetTrainTrack({
+    required this.data,
+    required this.stops,
+    required this.markerStyle,
+    this.compact = false,
+    this.showTimes = false,
+  });
+
+  final OnboardDisplayData data;
+  final List<MetroStop> stops;
+  final MetroTrainMarkerStyle markerStyle;
+  final bool compact;
+  final bool showTimes;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final count = math.max(1, stops.length);
+    final totalMinutes = math.max(1, (data.etaToNext?.inSeconds ?? 60) ~/ 60);
+    return SizedBox(
+      height: compact ? 150 : 188,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final nodeY = compact ? 84.0 : 108.0;
+          final positions = List.generate(
+            count,
+            (i) =>
+                count == 1 ? width * .5 : 30 + (width - 60) * i / (count - 1),
+          );
+          final firstNode = positions.first;
+          final trainX = (firstNode * data.segmentProgress.clamp(0.0, 1.0))
+              .clamp(6.0, width - 54.0)
+              .toDouble();
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned(
+                left: 22,
+                right: 22,
+                top: nodeY,
+                child: Container(
+                  height: 5,
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.onSurface.withValues(alpha: .16),
+                    borderRadius: BorderRadius.circular(5),
+                  ),
+                ),
+              ),
+              Positioned(
+                left: 22,
+                top: nodeY,
+                width: math.max(0.0, trainX - 5).toDouble(),
+                child: Container(
+                  height: 5,
+                  color: data.lineColor.withValues(alpha: .78),
+                ),
+              ),
+              for (var i = 0; i < positions.length; i++) ...[
+                Positioned(
+                  left: positions[i] - 45,
+                  top: 0,
+                  width: 90,
+                  child: Text(
+                    _motionStationName(data, stops[i]),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: positions[i] - 11,
+                  top: nodeY - 9,
+                  child: Container(
+                    width: 22,
+                    height: 22,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surface,
+                      shape: BoxShape.circle,
+                      border: Border.all(color: data.lineColor, width: 4),
+                    ),
+                  ),
+                ),
+                if (showTimes)
+                  Positioned(
+                    left: positions[i] - 35,
+                    top: nodeY + 24,
+                    width: 70,
+                    child: Text(
+                      '${math.max(1, (totalMinutes * (i + 1) / count).ceil())} min',
+                      textAlign: TextAlign.center,
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+              ],
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 850),
+                curve: Curves.easeOutCubic,
+                left: trainX,
+                top: nodeY - (compact ? 24 : 30),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    Container(
+                      width: compact ? 54 : 68,
+                      height: compact ? 54 : 68,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: data.lineColor.withValues(alpha: .12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: data.lineColor.withValues(alpha: .32),
+                            blurRadius: 18,
+                          ),
+                        ],
+                      ),
+                    ),
+                    Transform.rotate(
+                      angle: markerStyle == MetroTrainMarkerStyle.directional3d
+                          ? 0
+                          : math.pi / 2,
+                      child: Image.asset(
+                        _motionTrainAsset(
+                          data.lineKey,
+                          markerStyle,
+                          forward: data.forward,
+                        ),
+                        width: compact ? 46 : 58,
+                        height: compact ? 46 : 58,
+                        fit: BoxFit.contain,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _SegmentProgress extends StatelessWidget {
+  const _SegmentProgress({required this.data, required this.stopCount});
+
+  final OnboardDisplayData data;
+  final int stopCount;
+
+  @override
+  Widget build(BuildContext context) => Row(
+        children: [
+          Expanded(
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(6),
+              child: LinearProgressIndicator(
+                value: data.segmentProgress.clamp(0.0, 1.0),
+                minHeight: 6,
+                color: data.lineColor,
+                backgroundColor: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: .15),
+              ),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Text(
+            '$stopCount ${data.isRTL ? 'محطات' : 'stations'}',
+            style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+        ],
+      );
+}
+
+class _CarriageTrack extends StatelessWidget {
+  const _CarriageTrack({
+    required this.data,
+    required this.stops,
+    required this.markerStyle,
+  });
+
+  final OnboardDisplayData data;
+  final List<MetroStop> stops;
+  final MetroTrainMarkerStyle markerStyle;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final count = math.max(1, stops.length);
+    return SizedBox(
+      height: 205,
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final width = constraints.maxWidth;
+          final positions = List.generate(
+            count,
+            (i) =>
+                count == 1 ? width * .5 : 35 + (width - 70) * i / (count - 1),
+          );
+          final trainWidth = math.min(230.0, width * .52);
+          final targetX = positions.first;
+          final trainCenter = (targetX * data.segmentProgress.clamp(0.0, 1.0))
+              .clamp(trainWidth / 2, width - trainWidth / 2)
+              .toDouble();
+          return Stack(
+            children: [
+              Positioned(
+                left: 0,
+                right: 0,
+                top: 117,
+                child: Container(height: 5, color: data.lineColor),
+              ),
+              for (var i = 0; i < positions.length; i++) ...[
+                Positioned(
+                  left: positions[i] - 2,
+                  top: 36,
+                  child: Container(
+                    width: 4,
+                    height: 82,
+                    decoration: BoxDecoration(
+                      color: data.lineColor.withValues(alpha: .62),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: positions[i] - 40,
+                  top: 135,
+                  width: 80,
+                  child: Text(
+                    _motionStationName(data, stops[i]).toUpperCase(),
+                    textAlign: TextAlign.center,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      fontWeight: FontWeight.w900,
+                    ),
+                  ),
+                ),
+              ],
+              AnimatedPositioned(
+                duration: const Duration(milliseconds: 900),
+                curve: Curves.easeOutCubic,
+                left: trainCenter - trainWidth / 2,
+                top: 67,
+                child: markerStyle == MetroTrainMarkerStyle.directional3d
+                    ? SizedBox(
+                        width: trainWidth,
+                        height: 72,
+                        child: Image.asset(
+                          _motionTrainAsset(
+                            data.lineKey,
+                            markerStyle,
+                            forward: data.forward,
+                          ),
+                          fit: BoxFit.contain,
+                        ),
+                      )
+                    : _SideMetroTrain(
+                        color: data.lineColor,
+                        width: trainWidth,
+                      ),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _SideMetroTrain extends StatelessWidget {
+  const _SideMetroTrain({required this.color, required this.width});
+
+  final Color color;
+  final double width;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: width,
+        height: 58,
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: [
+              color.withValues(alpha: .9),
+              color,
+              const Color(0xFFD7DDE2),
+            ],
+            stops: const [0, .72, 1],
+          ),
+          borderRadius: const BorderRadius.horizontal(
+            left: Radius.circular(9),
+            right: Radius.circular(28),
+          ),
+          border: Border.all(color: Colors.white.withValues(alpha: .65)),
+          boxShadow: [
+            BoxShadow(
+              color: color.withValues(alpha: .4),
+              blurRadius: 18,
+              offset: const Offset(-10, 0),
+            ),
+          ],
+        ),
+        child: Row(
+          children: [
+            const SizedBox(width: 12),
+            for (var i = 0; i < 6; i++) ...[
+              Expanded(
+                child: Container(
+                  height: 19,
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF101820),
+                    borderRadius: BorderRadius.circular(3),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+            ],
+            const SizedBox(width: 17),
+          ],
+        ),
+      );
+}
 
 class _OnboardPanel extends StatefulWidget {
   _OnboardPanel.fromData(OnboardDisplayData data)
