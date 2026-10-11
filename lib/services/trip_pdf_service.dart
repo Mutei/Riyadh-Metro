@@ -257,6 +257,11 @@ class TripPdfService {
     // the rider. Keep Helvetica for Latin copy, but always embed Amiri as a
     // fallback so Arabic values in an English report remain readable.
     final arabicFont = await _loadArabicFont();
+    final lineKeys = _reportLineKeys(trip, timelineRows);
+    final trainArtwork = await _loadTrainArtwork(lineKeys);
+    final primaryLine = lineKeys.isEmpty ? '' : lineKeys.first;
+    final routeColor = _lineColor(primaryLine);
+    final routeColorDark = _lineDarkColor(primaryLine);
     final theme = pw.ThemeData.withFont(
       base: isArabic ? arabicFont : pw.Font.helvetica(),
       bold: isArabic ? arabicFont : pw.Font.helveticaBold(),
@@ -280,7 +285,14 @@ class TripPdfService {
           ),
         ),
         build: (_) => [
-          _hero(trip, copy, isArabic),
+          _hero(
+            trip,
+            copy,
+            isArabic,
+            trainArtwork,
+            routeColor,
+            routeColorDark,
+          ),
           pw.SizedBox(height: 22),
           _sectionTitle(copy.tripOverview, isArabic),
           pw.SizedBox(height: 10),
@@ -288,7 +300,7 @@ class TripPdfService {
           pw.SizedBox(height: 20),
           _sectionTitle(copy.routeDetails, isArabic),
           pw.SizedBox(height: 10),
-          _routeDetails(trip, copy, isArabic),
+          _routeDetails(trip, copy, isArabic, trainArtwork, routeColor),
           pw.SizedBox(height: 20),
           _sectionTitle(copy.tripTimeline, isArabic),
           pw.SizedBox(height: 10),
@@ -301,6 +313,7 @@ class TripPdfService {
                     entry.key + 1,
                     copy,
                     isArabic,
+                    trainArtwork,
                   ),
                 ),
           pw.SizedBox(height: 18),
@@ -316,58 +329,150 @@ class TripPdfService {
         return pw.Font.ttf(bytes);
       }();
 
-  pw.Widget _hero(TripPdfReportData trip, _TripPdfCopy copy, bool isArabic) =>
-      pw.Container(
-        padding: const pw.EdgeInsets.all(22),
-        decoration: pw.BoxDecoration(
-          gradient: const pw.LinearGradient(
-            colors: [_brand, _brandDark],
-            begin: pw.Alignment.topLeft,
-            end: pw.Alignment.bottomRight,
-          ),
-          borderRadius: pw.BorderRadius.circular(18),
+  List<String> _reportLineKeys(
+    TripPdfReportData trip,
+    List<_TripPdfTimelineRow> rows,
+  ) {
+    final keys = <String>[];
+
+    void add(String value) {
+      final normalized = _normalizeLineKey(value);
+      if (_supportedLine(normalized) && !keys.contains(normalized)) {
+        keys.add(normalized);
+      }
+    }
+
+    for (final key in trip.metroLineKeys) {
+      add(key);
+    }
+    for (final row in rows) {
+      if (row.isTransfer) {
+        add(row.transfer!.fromLineKey);
+        add(row.transfer!.toLineKey);
+      } else {
+        add(row.segment!.lineKey);
+      }
+    }
+    return keys;
+  }
+
+  Future<Map<String, pw.MemoryImage>> _loadTrainArtwork(
+    Iterable<String> lineKeys,
+  ) async {
+    final images = <String, pw.MemoryImage>{};
+    for (final key in lineKeys) {
+      try {
+        final bytes = await rootBundle.load(
+          'assets/markers/metro_train_portrait_$key.png',
+        );
+        images[key] = pw.MemoryImage(bytes.buffer.asUint8List());
+      } catch (_) {
+        // A missing decorative image must not prevent exporting trip records.
+      }
+    }
+    return images;
+  }
+
+  pw.Widget _hero(
+    TripPdfReportData trip,
+    _TripPdfCopy copy,
+    bool isArabic,
+    Map<String, pw.MemoryImage> trainArtwork,
+    PdfColor routeColor,
+    PdfColor routeColorDark,
+  ) {
+    final routeLines = trip.metroLineKeys
+        .map(_normalizeLineKey)
+        .where(trainArtwork.containsKey)
+        .toSet()
+        .toList();
+    if (routeLines.isEmpty) routeLines.addAll(trainArtwork.keys);
+    return pw.Container(
+      padding: const pw.EdgeInsets.all(22),
+      decoration: pw.BoxDecoration(
+        gradient: pw.LinearGradient(
+          colors: [routeColor, routeColorDark],
+          begin: pw.Alignment.topLeft,
+          end: pw.Alignment.bottomRight,
         ),
-        child: pw
-            .Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-          pw.Row(
-              mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-              children: [
-                pw.Text('DARB',
-                    style: pw.TextStyle(
-                        color: PdfColors.white,
-                        fontSize: 17,
-                        fontWeight: pw.FontWeight.bold,
-                        letterSpacing: 2)),
-                pw.Container(
-                  padding: const pw.EdgeInsets.symmetric(
-                      horizontal: 10, vertical: 5),
-                  decoration: pw.BoxDecoration(
-                    color: PdfColor.fromInt(0x28FFFFFF),
-                    borderRadius: pw.BorderRadius.circular(999),
-                  ),
-                  child: _text(copy.completedStatus(trip.finishedAt != null),
-                      isArabic: isArabic,
-                      style: const pw.TextStyle(
-                          color: PdfColors.white, fontSize: 9)),
-                ),
-              ]),
-          pw.SizedBox(height: 22),
-          _text(copy.tripReport,
-              isArabic: isArabic,
+        borderRadius: pw.BorderRadius.circular(18),
+      ),
+      child:
+          pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+        pw.Row(mainAxisAlignment: pw.MainAxisAlignment.spaceBetween, children: [
+          pw.Text('DARB',
               style: pw.TextStyle(
                   color: PdfColors.white,
-                  fontSize: 25,
-                  fontWeight: pw.FontWeight.bold)),
-          pw.SizedBox(height: 7),
-          _text('${copy.tripDate}: ${_formatDate(trip.startedAt, isArabic)}',
-              isArabic: isArabic,
-              style: const pw.TextStyle(color: PdfColors.white, fontSize: 10)),
-          pw.SizedBox(height: 16),
-          pw.Wrap(spacing: 8, runSpacing: 8, children: [
-            _heroPill('${copy.reference}: ${trip.id}', isArabic),
-            _heroPill('${copy.mode}: ${copy.modeLabel(trip.mode)}', isArabic),
-          ]),
+                  fontSize: 17,
+                  fontWeight: pw.FontWeight.bold,
+                  letterSpacing: 2)),
+          pw.Container(
+            padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+            decoration: pw.BoxDecoration(
+              color: PdfColor.fromInt(0x28FFFFFF),
+              borderRadius: pw.BorderRadius.circular(999),
+            ),
+            child: _text(copy.completedStatus(trip.finishedAt != null),
+                isArabic: isArabic,
+                style: const pw.TextStyle(color: PdfColors.white, fontSize: 9)),
+          ),
         ]),
+        pw.SizedBox(height: 22),
+        pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.center, children: [
+          pw.Expanded(
+            child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                _text(copy.tripReport,
+                    isArabic: isArabic,
+                    style: pw.TextStyle(
+                        color: PdfColors.white,
+                        fontSize: 25,
+                        fontWeight: pw.FontWeight.bold)),
+                pw.SizedBox(height: 7),
+                _text(
+                  '${copy.tripDate}: ${_formatDate(trip.startedAt, isArabic)}',
+                  isArabic: isArabic,
+                  style:
+                      const pw.TextStyle(color: PdfColors.white, fontSize: 10),
+                ),
+                pw.SizedBox(height: 16),
+                pw.Wrap(spacing: 8, runSpacing: 8, children: [
+                  _heroPill('${copy.reference}: ${trip.id}', isArabic),
+                  _heroPill(
+                    '${copy.mode}: ${copy.modeLabel(trip.mode)}',
+                    isArabic,
+                  ),
+                ]),
+              ],
+            ),
+          ),
+          if (trip.mode == 'metro' && routeLines.isNotEmpty) ...[
+            pw.SizedBox(width: 18),
+            pw.Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: routeLines
+                  .take(3)
+                  .map((key) => _heroTrainArtwork(trainArtwork[key]!))
+                  .toList(),
+            ),
+          ],
+        ]),
+      ]),
+    );
+  }
+
+  pw.Widget _heroTrainArtwork(pw.MemoryImage image) => pw.Container(
+        width: 58,
+        height: 58,
+        padding: const pw.EdgeInsets.all(3),
+        decoration: pw.BoxDecoration(
+          color: const PdfColor.fromInt(0x24FFFFFF),
+          borderRadius: pw.BorderRadius.circular(12),
+          border: pw.Border.all(color: const PdfColor.fromInt(0x45FFFFFF)),
+        ),
+        child: pw.Image(image, fit: pw.BoxFit.contain),
       );
 
   pw.Widget _heroPill(String value, bool isArabic) => pw.Container(
@@ -434,10 +539,18 @@ class TripPdfService {
       );
 
   pw.Widget _routeDetails(
-      TripPdfReportData trip, _TripPdfCopy copy, bool isArabic) {
-    final lineNames = trip.metroLineKeys.isEmpty
-        ? copy.notAvailable
-        : trip.metroLineKeys.map(copy.lineName).join(isArabic ? '، ' : ', ');
+    TripPdfReportData trip,
+    _TripPdfCopy copy,
+    bool isArabic,
+    Map<String, pw.MemoryImage> trainArtwork,
+    PdfColor routeColor,
+  ) {
+    final lineKeys = trip.metroLineKeys
+        .map(_normalizeLineKey)
+        .where(_supportedLine)
+        .toSet()
+        .toList();
+    if (lineKeys.isEmpty) lineKeys.addAll(trainArtwork.keys);
     return pw.Container(
       padding: const pw.EdgeInsets.all(16),
       decoration: pw.BoxDecoration(
@@ -447,18 +560,26 @@ class TripPdfService {
       child:
           pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
         _routeStop(copy.origin, _stationName(trip.originLabel, copy), isArabic,
-            isStart: true),
+            isStart: true, routeColor: routeColor),
         pw.Container(
-            width: 1.2,
+            width: 2.2,
             height: 18,
-            margin: const pw.EdgeInsets.only(left: 7),
-            color: _border),
+            margin: const pw.EdgeInsets.only(left: 6.4),
+            color: routeColor),
         _routeStop(copy.destination, _stationName(trip.destinationLabel, copy),
             isArabic,
-            isStart: false),
+            isStart: false, routeColor: routeColor),
         if (trip.mode == 'metro') ...[
           pw.SizedBox(height: 16),
-          _detailRow(copy.metroLines, lineNames, isArabic),
+          if (lineKeys.isEmpty)
+            _detailRow(copy.metroLines, copy.notAvailable, isArabic)
+          else
+            _metroLineArtworkRow(
+              copy.metroLines,
+              lineKeys,
+              trainArtwork,
+              isArabic,
+            ),
           _detailRow(
               copy.fromStation, _stationName(trip.fromStation, copy), isArabic),
           _detailRow(
@@ -468,16 +589,22 @@ class TripPdfService {
     );
   }
 
-  pw.Widget _routeStop(String label, String value, bool isArabic,
-          {required bool isStart}) =>
+  pw.Widget _routeStop(
+    String label,
+    String value,
+    bool isArabic, {
+    required bool isStart,
+    required PdfColor routeColor,
+  }) =>
       pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
         pw.Container(
           width: 15,
           height: 15,
           margin: const pw.EdgeInsets.only(top: 1),
           decoration: pw.BoxDecoration(
-            color: isStart ? _brand : PdfColor.fromInt(0xFFD95D4F),
+            color: isStart ? routeColor : PdfColors.white,
             shape: pw.BoxShape.circle,
+            border: pw.Border.all(color: routeColor, width: 2.2),
           ),
         ),
         pw.SizedBox(width: 10),
@@ -498,6 +625,41 @@ class TripPdfService {
             ])),
       ]);
 
+  pw.Widget _metroLineArtworkRow(
+    String label,
+    List<String> lineKeys,
+    Map<String, pw.MemoryImage> trainArtwork,
+    bool isArabic,
+  ) =>
+      pw.Padding(
+        padding: const pw.EdgeInsets.only(top: 10),
+        child: pw.Column(
+          crossAxisAlignment: pw.CrossAxisAlignment.start,
+          children: [
+            _text(
+              label,
+              isArabic: isArabic,
+              style: const pw.TextStyle(color: _muted, fontSize: 9),
+            ),
+            pw.SizedBox(height: 7),
+            pw.Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: lineKeys
+                  .map(
+                    (key) => _pdfTrainToken(
+                      key,
+                      trainArtwork[key],
+                      width: 66,
+                      height: 54,
+                    ),
+                  )
+                  .toList(),
+            ),
+          ],
+        ),
+      );
+
   pw.Widget _detailRow(String label, String value, bool isArabic) => pw.Padding(
         padding: const pw.EdgeInsets.only(top: 8),
         child:
@@ -514,48 +676,133 @@ class TripPdfService {
         ]),
       );
 
-  pw.Widget _timelineItem(_TripPdfTimelineRow row, int index, _TripPdfCopy copy,
-          bool isArabic) =>
-      pw.Padding(
-        padding: const pw.EdgeInsets.only(bottom: 10),
-        child:
-            pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-          pw.Container(
-            width: 23,
-            height: 23,
-            alignment: pw.Alignment.center,
-            decoration: pw.BoxDecoration(
-                color: row.isTransfer ? PdfColors.orange : _brand,
-                shape: pw.BoxShape.circle),
-            child: pw.Text('$index',
-                style: const pw.TextStyle(color: PdfColors.white, fontSize: 9)),
+  pw.Widget _timelineItem(
+    _TripPdfTimelineRow row,
+    int index,
+    _TripPdfCopy copy,
+    bool isArabic,
+    Map<String, pw.MemoryImage> trainArtwork,
+  ) {
+    final lineKeys = _timelineLineKeys(row);
+    final accent = _lineColor(lineKeys.isEmpty ? '' : lineKeys.last);
+    return pw.Padding(
+      padding: const pw.EdgeInsets.only(bottom: 10),
+      child: pw.Row(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
+        pw.Container(
+          width: 23,
+          height: 23,
+          alignment: pw.Alignment.center,
+          decoration:
+              pw.BoxDecoration(color: accent, shape: pw.BoxShape.circle),
+          child: pw.Text('$index',
+              style: const pw.TextStyle(color: PdfColors.white, fontSize: 9)),
+        ),
+        pw.SizedBox(width: 10),
+        pw.Expanded(
+            child: pw.Container(
+          padding: const pw.EdgeInsets.all(11),
+          decoration: pw.BoxDecoration(
+            color: _panel,
+            borderRadius: pw.BorderRadius.circular(10),
+            border: pw.Border(left: pw.BorderSide(color: accent, width: 3)),
           ),
-          pw.SizedBox(width: 10),
-          pw.Expanded(
-              child: pw.Container(
-            padding: const pw.EdgeInsets.all(11),
-            decoration: pw.BoxDecoration(
-                color: _panel, borderRadius: pw.BorderRadius.circular(10)),
-            child: pw.Column(
-                crossAxisAlignment: pw.CrossAxisAlignment.start,
-                children: [
-                  _text(
-                      row.isTransfer
-                          ? '${copy.transfer}: ${_stationName(row.transfer!.station, copy)}'
-                          : '${_stationName(row.segment!.fromStation, copy)} ${copy.to} ${_stationName(row.segment!.toStation, copy)}',
-                      isArabic: isArabic,
-                      style: pw.TextStyle(
-                          color: _ink,
-                          fontSize: 10.5,
-                          fontWeight: pw.FontWeight.bold)),
-                  pw.SizedBox(height: 4),
-                  _text(_timelineMeta(row, copy, isArabic),
-                      isArabic: isArabic,
-                      style: const pw.TextStyle(color: _muted, fontSize: 8.5)),
-                ]),
-          )),
-        ]),
+          child: pw.Column(
+              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              children: [
+                pw.Row(
+                  crossAxisAlignment: pw.CrossAxisAlignment.center,
+                  children: [
+                    pw.Expanded(
+                      child: _text(
+                        row.isTransfer
+                            ? '${copy.transfer}: ${_stationName(row.transfer!.station, copy)}'
+                            : '${_stationName(row.segment!.fromStation, copy)} ${copy.to} ${_stationName(row.segment!.toStation, copy)}',
+                        isArabic: isArabic,
+                        style: pw.TextStyle(
+                            color: _ink,
+                            fontSize: 10.5,
+                            fontWeight: pw.FontWeight.bold),
+                      ),
+                    ),
+                    if (lineKeys.isNotEmpty) ...[
+                      pw.SizedBox(width: 10),
+                      _timelineArtwork(lineKeys, trainArtwork),
+                    ],
+                  ],
+                ),
+                pw.SizedBox(height: 4),
+                _text(_timelineMeta(row, copy, isArabic),
+                    isArabic: isArabic,
+                    style: const pw.TextStyle(color: _muted, fontSize: 8.5)),
+              ]),
+        )),
+      ]),
+    );
+  }
+
+  List<String> _timelineLineKeys(_TripPdfTimelineRow row) {
+    final values = row.isTransfer
+        ? [row.transfer!.fromLineKey, row.transfer!.toLineKey]
+        : [row.segment!.lineKey];
+    return values.map(_normalizeLineKey).where(_supportedLine).toSet().toList();
+  }
+
+  pw.Widget _timelineArtwork(
+    List<String> lineKeys,
+    Map<String, pw.MemoryImage> trainArtwork,
+  ) =>
+      pw.Row(
+        mainAxisSize: pw.MainAxisSize.min,
+        children: lineKeys.asMap().entries.expand((entry) {
+          final widgets = <pw.Widget>[
+            _pdfTrainToken(
+              entry.value,
+              trainArtwork[entry.value],
+              width: 36,
+              height: 31,
+            ),
+          ];
+          if (entry.key < lineKeys.length - 1) {
+            widgets.add(pw.Padding(
+              padding: const pw.EdgeInsets.symmetric(horizontal: 3),
+              child: pw.Text('>',
+                  style: const pw.TextStyle(color: _muted, fontSize: 8)),
+            ));
+          }
+          return widgets;
+        }).toList(),
       );
+
+  pw.Widget _pdfTrainToken(
+    String lineKey,
+    pw.MemoryImage? image, {
+    required double width,
+    required double height,
+  }) {
+    final accent = _lineColor(lineKey);
+    return pw.Container(
+      width: width,
+      height: height,
+      padding: const pw.EdgeInsets.all(2.5),
+      decoration: pw.BoxDecoration(
+        color: PdfColors.white,
+        borderRadius: pw.BorderRadius.circular(9),
+        border: pw.Border.all(color: accent, width: 1.2),
+      ),
+      child: image == null
+          ? pw.Center(
+              child: pw.Container(
+                width: 10,
+                height: 10,
+                decoration: pw.BoxDecoration(
+                  color: accent,
+                  shape: pw.BoxShape.circle,
+                ),
+              ),
+            )
+          : pw.Image(image, fit: pw.BoxFit.contain),
+    );
+  }
 
   pw.Widget _emptyTimeline(_TripPdfCopy copy, bool isArabic) => pw.Container(
         padding: const pw.EdgeInsets.all(14),
@@ -605,8 +852,6 @@ class TripPdfService {
   String _segmentMeta(
       TripPdfSegment segment, _TripPdfCopy copy, bool isArabic) {
     final details = <String>[];
-    if (segment.lineKey.trim().isNotEmpty)
-      details.add('${copy.line}: ${copy.lineName(segment.lineKey)}');
     if (segment.seconds > 0)
       details.add(_formatDuration(segment.seconds, copy, isArabic));
     if (segment.startedAt != null && segment.finishedAt != null) {
@@ -623,10 +868,6 @@ class TripPdfService {
   String _transferMeta(
       TripPdfTransfer transfer, _TripPdfCopy copy, bool isArabic) {
     final details = <String>[];
-    if (transfer.fromLineKey.isNotEmpty && transfer.toLineKey.isNotEmpty) {
-      details
-          .add(copy.lineTransition(transfer.fromLineKey, transfer.toLineKey));
-    }
     if (transfer.seconds > 0) {
       details.add(_formatDuration(transfer.seconds, copy, isArabic));
     }
@@ -639,6 +880,55 @@ class TripPdfService {
       details.add(_formatTime(transfer.startedAt!, isArabic));
     }
     return details.isEmpty ? copy.noAdditionalDetails : details.join(' | ');
+  }
+
+  String _normalizeLineKey(String value) => value.trim().toLowerCase();
+
+  bool _supportedLine(String value) => const {
+        'blue',
+        'red',
+        'green',
+        'yellow',
+        'orange',
+        'purple',
+      }.contains(value);
+
+  PdfColor _lineColor(String lineKey) {
+    switch (_normalizeLineKey(lineKey)) {
+      case 'blue':
+        return const PdfColor.fromInt(0xFF1976D2);
+      case 'red':
+        return const PdfColor.fromInt(0xFFD7353F);
+      case 'green':
+        return const PdfColor.fromInt(0xFF14844A);
+      case 'yellow':
+        return const PdfColor.fromInt(0xFFD99A00);
+      case 'orange':
+        return const PdfColor.fromInt(0xFFE86512);
+      case 'purple':
+        return const PdfColor.fromInt(0xFF8135B5);
+      default:
+        return _brand;
+    }
+  }
+
+  PdfColor _lineDarkColor(String lineKey) {
+    switch (_normalizeLineKey(lineKey)) {
+      case 'blue':
+        return const PdfColor.fromInt(0xFF0A3765);
+      case 'red':
+        return const PdfColor.fromInt(0xFF68151C);
+      case 'green':
+        return const PdfColor.fromInt(0xFF0B452B);
+      case 'yellow':
+        return const PdfColor.fromInt(0xFF705000);
+      case 'orange':
+        return const PdfColor.fromInt(0xFF7A2F08);
+      case 'purple':
+        return const PdfColor.fromInt(0xFF421960);
+      default:
+        return _brandDark;
+    }
   }
 
   String _formatDate(DateTime date, bool isArabic) {

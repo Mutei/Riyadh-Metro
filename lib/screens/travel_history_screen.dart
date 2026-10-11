@@ -11,6 +11,20 @@ import '../utils/geo_utils.dart'; // kept for other helpers if you use it elsewh
 import '../services/travel_history_service.dart';
 import '../services/trip_pdf_service.dart';
 
+String? _metroTrainPortraitAsset(String lineKey) {
+  final normalized = lineKey.trim().toLowerCase();
+  const supported = {
+    'blue',
+    'red',
+    'green',
+    'yellow',
+    'orange',
+    'purple',
+  };
+  if (!supported.contains(normalized)) return null;
+  return 'assets/markers/metro_train_portrait_$normalized.png';
+}
+
 class TravelHistoryScreen extends StatefulWidget {
   const TravelHistoryScreen({super.key});
 
@@ -540,16 +554,28 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
     Widget lineChip(String lineKey) {
       final selected = _selectedLines.contains(lineKey);
       final color = _lineColor(lineKey);
+      final trainAsset = _metroTrainPortraitAsset(lineKey);
       return FilterChip(
         selected: selected,
         label: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              width: 10,
-              height: 10,
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
-            ),
+            if (trainAsset != null)
+              SizedBox(
+                width: 28,
+                height: 24,
+                child: Image.asset(
+                  trainAsset,
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.high,
+                ),
+              )
+            else
+              Container(
+                width: 10,
+                height: 10,
+                decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+              ),
             const SizedBox(width: 6),
             Text(lineKey),
           ],
@@ -756,7 +782,6 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
   Widget _tripCard(ThemeData theme, TravelEntry e) {
     final cs = theme.colorScheme;
     final isCar = e.mode == 'car';
-    final accent = isCar ? const Color(0xFF1976D2) : const Color(0xFF00897B);
     final selected = _selectedIds.contains(e.id);
 
     // Times (localized)
@@ -766,6 +791,13 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
         : tr('—', '—');
 
     final lines = e.metroLineKeys ?? const [];
+    final primaryLine = lines.isEmpty ? '' : lines.first;
+    final trainAsset = _metroTrainPortraitAsset(primaryLine);
+    final accent = isCar
+        ? const Color(0xFF1976D2)
+        : lines.isEmpty
+            ? const Color(0xFF00897B)
+            : _lineColor(primaryLine);
 
     return InkWell(
       onLongPress: () => _enterSelection(e),
@@ -808,15 +840,32 @@ class _TravelHistoryScreenState extends State<TravelHistoryScreen> {
                     width: 46,
                     height: 46,
                     decoration: BoxDecoration(
-                      color: accent,
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [
+                          accent.withValues(alpha: 0.28),
+                          accent.withValues(alpha: 0.08),
+                        ],
+                      ),
                       borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: accent.withValues(alpha: 0.42)),
                     ),
-                    child: Icon(
-                      isCar
-                          ? Icons.directions_car_filled
-                          : Icons.directions_subway_filled,
-                      color: Colors.white,
-                    ),
+                    child: isCar || trainAsset == null
+                        ? Icon(
+                            isCar
+                                ? Icons.directions_car_filled
+                                : Icons.directions_subway_filled,
+                            color: isCar ? Colors.white : accent,
+                          )
+                        : Padding(
+                            padding: const EdgeInsets.all(3),
+                            child: Image.asset(
+                              trainAsset,
+                              fit: BoxFit.contain,
+                              filterQuality: FilterQuality.high,
+                            ),
+                          ),
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -1674,29 +1723,10 @@ class _SegmentsList extends StatelessWidget {
     final pretty = lineKey.isEmpty
         ? _tr(ctx, 'Line', 'Line')
         : '${lineKey[0].toUpperCase()}${lineKey.substring(1).toLowerCase()}';
-    final c = _lineColor(lineKey);
-    final isDark = Theme.of(ctx).brightness == Brightness.dark;
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      decoration: BoxDecoration(
-        color: c.withOpacity(isDark ? .20 : .12),
-        border: Border.all(color: c.withOpacity(.45)),
-        borderRadius: BorderRadius.circular(999),
-      ),
-      child: Row(mainAxisSize: MainAxisSize.min, children: [
-        Container(
-            width: 8,
-            height: 8,
-            decoration: BoxDecoration(color: c, shape: BoxShape.circle)),
-        const SizedBox(width: 6),
-        Text(
-          pretty,
-          style: Theme.of(ctx).textTheme.labelSmall?.copyWith(
-                fontWeight: FontWeight.w800,
-                color: Theme.of(ctx).colorScheme.onSurface,
-              ),
-        ),
-      ]),
+    return LineCapsule(
+      label: pretty,
+      color: _lineColor(lineKey),
+      dense: true,
     );
   }
 
@@ -1951,39 +1981,66 @@ class LineCapsule extends StatelessWidget {
     final theme = Theme.of(context);
     final cs = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
-
-    // Compact sizes for very small screens
-    final double padH = dense ? 8 : 10;
-    final double padV = dense ? 5 : 6;
-    final double dot = dense ? 8 : 10;
-    final double font = dense ? 12.5 : 13.5;
+    final asset = _metroTrainPortraitAsset(label);
+    final width = dense ? 66.0 : 84.0;
+    final height = dense ? 52.0 : 66.0;
 
     return Semantics(
-      label: label,
+      label: '$label metro line',
       child: Container(
-        padding: EdgeInsets.symmetric(horizontal: padH, vertical: padV),
+        width: width,
+        height: height,
+        padding: EdgeInsets.all(dense ? 3 : 5),
         decoration: BoxDecoration(
-          color: color.withOpacity(isDark ? 0.18 : 0.12),
-          borderRadius: BorderRadius.circular(14),
-          border: Border.all(color: color.withOpacity(0.45), width: 0.7),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: dot,
-              height: dot,
-              decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          gradient: LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              color.withValues(alpha: isDark ? 0.28 : 0.20),
+              cs.surface.withValues(alpha: isDark ? 0.78 : 0.94),
+            ],
+          ),
+          borderRadius: BorderRadius.circular(dense ? 14 : 18),
+          border: Border.all(color: color.withValues(alpha: 0.55), width: 1),
+          boxShadow: [
+            BoxShadow(
+              color: color.withValues(alpha: isDark ? 0.18 : 0.12),
+              blurRadius: 10,
+              offset: const Offset(0, 3),
             ),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                fontWeight: FontWeight.w700,
-                fontSize: font,
-                color: cs.onSurface,
+          ],
+        ),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            if (asset != null)
+              Positioned.fill(
+                child: Image.asset(
+                  asset,
+                  fit: BoxFit.contain,
+                  filterQuality: FilterQuality.high,
+                  errorBuilder: (_, __, ___) =>
+                      Icon(Icons.directions_subway_rounded, color: color),
+                ),
+              )
+            else
+              Icon(Icons.directions_subway_rounded, color: color),
+            PositionedDirectional(
+              start: 5,
+              top: 8,
+              bottom: 8,
+              child: Container(
+                width: 3,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(99),
+                  boxShadow: [
+                    BoxShadow(
+                      color: color.withValues(alpha: 0.45),
+                      blurRadius: 5,
+                    ),
+                  ],
+                ),
               ),
             ),
           ],

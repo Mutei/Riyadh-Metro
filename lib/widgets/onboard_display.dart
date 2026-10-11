@@ -250,6 +250,14 @@ String _motionTrainAsset(
       : 'assets/markers/metro_train_topdown.png';
 }
 
+String _liveCarriageTrainAsset(String lineKey) {
+  final key = lineKey.toLowerCase();
+  const supported = {'yellow', 'blue', 'red', 'purple', 'orange', 'green'};
+  return supported.contains(key)
+      ? 'assets/markers/metro_carriage_${key}_right.png'
+      : 'assets/markers/metro_carriage_blue_right.png';
+}
+
 String _motionStationName(OnboardDisplayData data, MetroStop stop) =>
     data.isRTL ? stop.nameAr : stop.nameEn;
 
@@ -262,6 +270,21 @@ List<MetroStop> _upcomingStops(OnboardDisplayData data) {
   if (ordered.length <= 1) return ordered;
   return ordered.skip(1).toList();
 }
+
+List<MetroStop> _liveCarriageStops(OnboardDisplayData data) {
+  if (data.stops.isEmpty) return const [];
+  final current = data.currentIndex.clamp(0, data.stops.length - 1).toInt();
+  if (data.forward) {
+    return data.stops
+        .sublist(current, math.min(data.stops.length, current + 3));
+  }
+  return data.stops.sublist(math.max(0, current - 2), current + 1);
+}
+
+bool _sameMotionStop(MetroStop a, MetroStop b) =>
+    a.id == b.id ||
+    a.nameEn.toLowerCase() == b.nameEn.toLowerCase() ||
+    a.nameAr == b.nameAr;
 
 String _motionEta(Duration? eta, bool rtl) {
   if (eta == null) return '--';
@@ -595,7 +618,7 @@ class _LiveCarriagePanel extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final upcoming = _upcomingStops(data).take(3).toList();
+    final visibleStops = _liveCarriageStops(data);
     return _MotionPanelShell(
       child: Column(
         children: [
@@ -605,7 +628,7 @@ class _LiveCarriagePanel extends StatelessWidget {
           const SizedBox(height: 26),
           _CarriageTrack(
             data: data,
-            stops: upcoming,
+            stops: visibleStops,
             markerStyle: trainMarkerStyle,
           ),
           const SizedBox(height: 24),
@@ -829,44 +852,109 @@ class _CarriageTrack extends StatelessWidget {
     final theme = Theme.of(context);
     final count = math.max(1, stops.length);
     return SizedBox(
-      height: 205,
+      height: 230,
       child: LayoutBuilder(
         builder: (context, constraints) {
           final width = constraints.maxWidth;
           final positions = List.generate(
             count,
-            (i) =>
-                count == 1 ? width * .5 : 35 + (width - 70) * i / (count - 1),
+            (i) => count == 1
+                ? width * .5
+                : width * (.18 + (.64 * i / (count - 1))),
           );
-          final trainWidth = math.min(230.0, width * .52);
-          final targetX = positions.first;
-          final trainCenter = (targetX * data.segmentProgress.clamp(0.0, 1.0))
-              .clamp(trainWidth / 2, width - trainWidth / 2)
-              .toDouble();
+          final currentDataIndex =
+              data.currentIndex.clamp(0, data.stops.length - 1).toInt();
+          final nextDataIndex =
+              (data.forward ? currentDataIndex + 1 : currentDataIndex - 1)
+                  .clamp(0, data.stops.length - 1)
+                  .toInt();
+          final currentStop = data.stops[currentDataIndex];
+          final nextStop = data.stops[nextDataIndex];
+          final currentVisibleIndex = math.max(
+            0,
+            stops.indexWhere((stop) => _sameMotionStop(stop, currentStop)),
+          );
+          final nextVisibleIndex = math.max(
+            0,
+            stops.indexWhere((stop) => _sameMotionStop(stop, nextStop)),
+          );
+          final progress = data.segmentProgress.clamp(0.0, 1.0);
+          final currentX = positions[currentVisibleIndex];
+          final nextX = positions[nextVisibleIndex];
+          final trainCenter = currentX + ((nextX - currentX) * progress);
+          final trainWidth = markerStyle == MetroTrainMarkerStyle.directional3d
+              ? math.min(350.0, width * .62)
+              : math.min(230.0, width * .52);
+          const trainHeight = 138.0;
+          const trackY = 130.0;
           return Stack(
+            clipBehavior: Clip.hardEdge,
             children: [
               Positioned(
                 left: 0,
                 right: 0,
-                top: 117,
+                top: trackY,
                 child: Container(height: 5, color: data.lineColor),
               ),
               for (var i = 0; i < positions.length; i++) ...[
+                Builder(
+                  builder: (context) {
+                    final isCurrent = _sameMotionStop(stops[i], currentStop);
+                    final isNext = _sameMotionStop(stops[i], nextStop);
+                    return Positioned(
+                      left: positions[i] - 2,
+                      top: 34,
+                      child: Container(
+                        width: 4,
+                        height: trackY - 34,
+                        decoration: BoxDecoration(
+                          color: data.lineColor.withValues(
+                            alpha: isNext ? .92 : (isCurrent ? .68 : .42),
+                          ),
+                          borderRadius: BorderRadius.circular(4),
+                          boxShadow: isNext
+                              ? [
+                                  BoxShadow(
+                                    color:
+                                        data.lineColor.withValues(alpha: .35),
+                                    blurRadius: 12,
+                                  ),
+                                ]
+                              : null,
+                        ),
+                      ),
+                    );
+                  },
+                ),
                 Positioned(
-                  left: positions[i] - 2,
-                  top: 36,
+                  left: positions[i] - 10,
+                  top: trackY - 8,
                   child: Container(
-                    width: 4,
-                    height: 82,
+                    width: 20,
+                    height: 20,
                     decoration: BoxDecoration(
-                      color: data.lineColor.withValues(alpha: .62),
-                      borderRadius: BorderRadius.circular(4),
+                      color: _sameMotionStop(stops[i], nextStop)
+                          ? data.lineColor
+                          : theme.colorScheme.surface,
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: data.lineColor,
+                        width: _sameMotionStop(stops[i], nextStop) ? 4 : 3,
+                      ),
+                      boxShadow: _sameMotionStop(stops[i], nextStop)
+                          ? [
+                              BoxShadow(
+                                color: data.lineColor.withValues(alpha: .5),
+                                blurRadius: 14,
+                              ),
+                            ]
+                          : null,
                     ),
                   ),
                 ),
                 Positioned(
                   left: positions[i] - 40,
-                  top: 135,
+                  top: trackY + 24,
                   width: 80,
                   child: Text(
                     _motionStationName(data, stops[i]).toUpperCase(),
@@ -875,6 +963,9 @@ class _CarriageTrack extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.labelSmall?.copyWith(
                       fontWeight: FontWeight.w900,
+                      color: _sameMotionStop(stops[i], nextStop)
+                          ? data.lineColor
+                          : null,
                     ),
                   ),
                 ),
@@ -882,19 +973,26 @@ class _CarriageTrack extends StatelessWidget {
               AnimatedPositioned(
                 duration: const Duration(milliseconds: 900),
                 curve: Curves.easeOutCubic,
-                left: trainCenter - trainWidth / 2,
-                top: 67,
+                left: (trainCenter - trainWidth / 2)
+                    .clamp(-trainWidth * .12, width - trainWidth * .88)
+                    .toDouble(),
+                top: markerStyle == MetroTrainMarkerStyle.directional3d
+                    ? -4
+                    : 72,
                 child: markerStyle == MetroTrainMarkerStyle.directional3d
                     ? SizedBox(
                         width: trainWidth,
-                        height: 72,
-                        child: Image.asset(
-                          _motionTrainAsset(
-                            data.lineKey,
-                            markerStyle,
-                            forward: data.forward,
+                        height: trainHeight,
+                        child: Transform(
+                          alignment: Alignment.center,
+                          transform: Matrix4.rotationY(
+                            data.forward ? 0 : math.pi,
                           ),
-                          fit: BoxFit.contain,
+                          child: Image.asset(
+                            _liveCarriageTrainAsset(data.lineKey),
+                            fit: BoxFit.contain,
+                            filterQuality: FilterQuality.high,
+                          ),
                         ),
                       )
                     : _SideMetroTrain(

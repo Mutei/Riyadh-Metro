@@ -38,6 +38,8 @@ assets/*
 !assets/markers/
 assets/markers/*
 !assets/markers/metro_train_directions_*.png
+!assets/markers/metro_carriage_*_right.png
+!assets/markers/metro_train_portrait_*.png
 !assets/markers/directional/
 !assets/markers/directional/*.png
 .pub/
