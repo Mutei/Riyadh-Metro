@@ -10,6 +10,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:share_plus/share_plus.dart';
 
 import '../latlon/latlong_stations.dart' as metro;
+import 'metro_route_distance.dart';
 
 /// Builds the original clean, structured trip report from actual stored data.
 class TripPdfService {
@@ -65,8 +66,23 @@ class TripPdfService {
   }
 
   Future<File> generateTripReport(TripPdfReportData trip) async {
-    final segments = await _loadSegments(trip.id);
-    final transfers = await _loadTransfers(trip.id);
+    var segments = await _loadSegments(trip.id);
+    var transfers = await _loadTransfers(trip.id);
+    final includedLines = trip.includedMetroLineKeys
+        .map(_normalizeLineKey)
+        .where(_supportedLine)
+        .toSet();
+    if (includedLines.isNotEmpty) {
+      segments = segments
+          .where((segment) =>
+              includedLines.contains(_normalizeLineKey(segment.lineKey)))
+          .toList();
+      transfers = transfers.where((transfer) {
+        final from = _normalizeLineKey(transfer.fromLineKey);
+        final to = _normalizeLineKey(transfer.toLineKey);
+        return includedLines.contains(from) && includedLines.contains(to);
+      }).toList();
+    }
     final file = await _reportFile(trip);
     await file.writeAsBytes(
         await _buildPdf(trip, _timelineRows(segments, transfers)),
@@ -114,12 +130,22 @@ class TripPdfService {
     raw.forEach((key, value) {
       if (value is! Map) return;
       final data = Map<Object?, Object?>.from(value);
+      final fromStation =
+          (data['fromStation'] ?? data['from'] ?? '').toString();
+      final toStation = (data['toStation'] ?? data['to'] ?? '').toString();
+      final lineKey = (data['lineKey'] ?? '').toString();
       segments.add(TripPdfSegment(
         id: key.toString(),
-        fromStation: (data['fromStation'] ?? data['from'] ?? '').toString(),
-        toStation: (data['toStation'] ?? data['to'] ?? '').toString(),
-        lineKey: (data['lineKey'] ?? '').toString(),
+        fromStation: fromStation,
+        toStation: toStation,
+        lineKey: lineKey,
         seconds: (data['seconds'] as num?)?.toInt() ?? 0,
+        distanceMeters: (data['distanceMeters'] as num?)?.round() ??
+            MetroRouteDistance.betweenStations(
+              lineKey: lineKey,
+              fromStation: fromStation,
+              toStation: toStation,
+            ),
         startedAt: _dateFrom(data['startedAt']),
         finishedAt: _dateFrom(data['finishedAt']),
       ));
@@ -253,18 +279,18 @@ class TripPdfService {
   ) async {
     final copy = _TripPdfCopy.forLanguage(trip.languageCode);
     final isArabic = copy.arabic;
-    // A report's UI language can differ from a station or place name typed by
-    // the rider. Keep Helvetica for Latin copy, but always embed Amiri as a
-    // fallback so Arabic values in an English report remain readable.
     final arabicFont = await _loadArabicFont();
+    // The built-in PDF Helvetica fonts are Latin-only. A report can use an
+    // English UI while still containing an Arabic station or place name.
+    final useUnicodeFont = isArabic || _hasArabicContent(trip, timelineRows);
     final lineKeys = _reportLineKeys(trip, timelineRows);
     final trainArtwork = await _loadTrainArtwork(lineKeys);
     final primaryLine = lineKeys.isEmpty ? '' : lineKeys.first;
     final routeColor = _lineColor(primaryLine);
     final routeColorDark = _lineDarkColor(primaryLine);
     final theme = pw.ThemeData.withFont(
-      base: isArabic ? arabicFont : pw.Font.helvetica(),
-      bold: isArabic ? arabicFont : pw.Font.helveticaBold(),
+      base: useUnicodeFont ? arabicFont : pw.Font.helvetica(),
+      bold: useUnicodeFont ? arabicFont : pw.Font.helveticaBold(),
       fontFallback: [arabicFont],
     );
     final document = pw.Document(theme: theme);
@@ -296,11 +322,18 @@ class TripPdfService {
           pw.SizedBox(height: 22),
           _sectionTitle(copy.tripOverview, isArabic),
           pw.SizedBox(height: 10),
-          _overview(trip, copy, isArabic),
+          _overview(trip, timelineRows, copy, isArabic),
           pw.SizedBox(height: 20),
           _sectionTitle(copy.routeDetails, isArabic),
           pw.SizedBox(height: 10),
-          _routeDetails(trip, copy, isArabic, trainArtwork, routeColor),
+          _routeDetails(
+            trip,
+            timelineRows,
+            copy,
+            isArabic,
+            trainArtwork,
+            routeColor,
+          ),
           pw.SizedBox(height: 20),
           _sectionTitle(copy.tripTimeline, isArabic),
           pw.SizedBox(height: 10),
@@ -324,6 +357,29 @@ class TripPdfService {
     return document.save();
   }
 
+  bool _hasArabicContent(
+    TripPdfReportData trip,
+    List<_TripPdfTimelineRow> rows,
+  ) {
+    final values = <String>[
+      trip.originLabel,
+      trip.destinationLabel,
+      trip.fromStation ?? '',
+      trip.toStation ?? '',
+      for (final row in rows)
+        if (row.isTransfer) ...[
+          row.transfer!.station,
+        ] else ...[
+          row.segment!.fromStation,
+          row.segment!.toStation,
+        ],
+    ];
+    return values.any(
+      (value) =>
+          RegExp(r'[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF]').hasMatch(value),
+    );
+  }
+
   Future<pw.Font> _loadArabicFont() => _arabicFont ??= () async {
         final bytes = await rootBundle.load('assets/fonts/Amiri-Regular.ttf');
         return pw.Font.ttf(bytes);
@@ -342,7 +398,7 @@ class TripPdfService {
       }
     }
 
-    for (final key in trip.metroLineKeys) {
+    for (final key in trip.effectiveMetroLineKeys) {
       add(key);
     }
     for (final row in rows) {
@@ -381,7 +437,7 @@ class TripPdfService {
     PdfColor routeColor,
     PdfColor routeColorDark,
   ) {
-    final routeLines = trip.metroLineKeys
+    final routeLines = trip.effectiveMetroLineKeys
         .map(_normalizeLineKey)
         .where(trainArtwork.containsKey)
         .toSet()
@@ -487,32 +543,71 @@ class TripPdfService {
       );
 
   pw.Widget _overview(
-          TripPdfReportData trip, _TripPdfCopy copy, bool isArabic) =>
-      pw.Row(children: [
-        pw.Expanded(
-            child: _metricCard(copy.startTime,
-                _formatTime(trip.startedAt, isArabic), isArabic)),
-        pw.SizedBox(width: 9),
-        pw.Expanded(
-            child: _metricCard(
-                copy.endTime,
-                trip.finishedAt == null
-                    ? copy.notFinished
-                    : _formatTime(trip.finishedAt!, isArabic),
-                isArabic)),
-        pw.SizedBox(width: 9),
-        pw.Expanded(
-            child: _metricCard(
-                copy.duration,
-                _formatDuration(trip.durationSeconds, copy, isArabic),
-                isArabic)),
-        pw.SizedBox(width: 9),
-        pw.Expanded(
-            child: _metricCard(
-                copy.distance,
-                _formatDistance(trip.distanceMeters, copy, isArabic),
-                isArabic)),
-      ]);
+    TripPdfReportData trip,
+    List<_TripPdfTimelineRow> timelineRows,
+    _TripPdfCopy copy,
+    bool isArabic,
+  ) {
+    final isFiltered = trip.includedMetroLineKeys.isNotEmpty;
+    final starts = timelineRows
+        .map((row) => row.startedAt)
+        .whereType<DateTime>()
+        .toList()
+      ..sort();
+    final finishes = timelineRows
+        .map((row) => row.finishedAt)
+        .whereType<DateTime>()
+        .toList()
+      ..sort();
+    final scopedDuration = timelineRows.fold<int>(
+      0,
+      (total, row) => total + row.seconds,
+    );
+    final scopedSegments = timelineRows
+        .map((row) => row.segment)
+        .whereType<TripPdfSegment>()
+        .toList();
+    final hasCompleteDistance = scopedSegments.isNotEmpty &&
+        scopedSegments.every((segment) => segment.distanceMeters != null);
+    final scopedDistance = hasCompleteDistance
+        ? scopedSegments.fold<int>(
+            0,
+            (total, segment) => total + segment.distanceMeters!,
+          )
+        : null;
+    final start =
+        isFiltered && starts.isNotEmpty ? starts.first : trip.startedAt;
+    final end = isFiltered
+        ? (finishes.isEmpty ? null : finishes.last)
+        : trip.finishedAt;
+    final duration = isFiltered ? scopedDuration : trip.durationSeconds;
+
+    return pw.Row(children: [
+      pw.Expanded(
+          child: _metricCard(
+              copy.startTime, _formatTime(start, isArabic), isArabic)),
+      pw.SizedBox(width: 9),
+      pw.Expanded(
+          child: _metricCard(
+              copy.endTime,
+              end == null ? copy.notFinished : _formatTime(end, isArabic),
+              isArabic)),
+      pw.SizedBox(width: 9),
+      pw.Expanded(
+          child: _metricCard(copy.duration,
+              _formatDuration(duration, copy, isArabic), isArabic)),
+      pw.SizedBox(width: 9),
+      pw.Expanded(
+          child: _metricCard(
+              copy.distance,
+              isFiltered
+                  ? scopedDistance == null
+                      ? copy.notAvailable
+                      : _formatDistance(scopedDistance, copy, isArabic)
+                  : _formatDistance(trip.distanceMeters, copy, isArabic),
+              isArabic)),
+    ]);
+  }
 
   pw.Widget _metricCard(String label, String value, bool isArabic) =>
       pw.Container(
@@ -540,17 +635,32 @@ class TripPdfService {
 
   pw.Widget _routeDetails(
     TripPdfReportData trip,
+    List<_TripPdfTimelineRow> timelineRows,
     _TripPdfCopy copy,
     bool isArabic,
     Map<String, pw.MemoryImage> trainArtwork,
     PdfColor routeColor,
   ) {
-    final lineKeys = trip.metroLineKeys
+    final lineKeys = trip.effectiveMetroLineKeys
         .map(_normalizeLineKey)
         .where(_supportedLine)
         .toSet()
         .toList();
     if (lineKeys.isEmpty) lineKeys.addAll(trainArtwork.keys);
+    final scopedSegments = timelineRows
+        .map((row) => row.segment)
+        .whereType<TripPdfSegment>()
+        .toList();
+    final useScopedStops =
+        trip.includedMetroLineKeys.isNotEmpty && scopedSegments.isNotEmpty;
+    final origin =
+        useScopedStops ? scopedSegments.first.fromStation : trip.originLabel;
+    final destination =
+        useScopedStops ? scopedSegments.last.toStation : trip.destinationLabel;
+    final fromStation =
+        useScopedStops ? scopedSegments.first.fromStation : trip.fromStation;
+    final toStation =
+        useScopedStops ? scopedSegments.last.toStation : trip.toStation;
     return pw.Container(
       padding: const pw.EdgeInsets.all(16),
       decoration: pw.BoxDecoration(
@@ -559,15 +669,14 @@ class TripPdfService {
       ),
       child:
           pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.start, children: [
-        _routeStop(copy.origin, _stationName(trip.originLabel, copy), isArabic,
+        _routeStop(copy.origin, _stationName(origin, copy), isArabic,
             isStart: true, routeColor: routeColor),
         pw.Container(
             width: 2.2,
             height: 18,
             margin: const pw.EdgeInsets.only(left: 6.4),
             color: routeColor),
-        _routeStop(copy.destination, _stationName(trip.destinationLabel, copy),
-            isArabic,
+        _routeStop(copy.destination, _stationName(destination, copy), isArabic,
             isStart: false, routeColor: routeColor),
         if (trip.mode == 'metro') ...[
           pw.SizedBox(height: 16),
@@ -581,9 +690,8 @@ class TripPdfService {
               isArabic,
             ),
           _detailRow(
-              copy.fromStation, _stationName(trip.fromStation, copy), isArabic),
-          _detailRow(
-              copy.toStation, _stationName(trip.toStation, copy), isArabic),
+              copy.fromStation, _stationName(fromStation, copy), isArabic),
+          _detailRow(copy.toStation, _stationName(toStation, copy), isArabic),
         ],
       ]),
     );
@@ -704,37 +812,53 @@ class TripPdfService {
           decoration: pw.BoxDecoration(
             color: _panel,
             borderRadius: pw.BorderRadius.circular(10),
-            border: pw.Border(left: pw.BorderSide(color: accent, width: 3)),
           ),
-          child: pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
-              children: [
-                pw.Row(
-                  crossAxisAlignment: pw.CrossAxisAlignment.center,
-                  children: [
-                    pw.Expanded(
-                      child: _text(
-                        row.isTransfer
-                            ? '${copy.transfer}: ${_stationName(row.transfer!.station, copy)}'
-                            : '${_stationName(row.segment!.fromStation, copy)} ${copy.to} ${_stationName(row.segment!.toStation, copy)}',
-                        isArabic: isArabic,
-                        style: pw.TextStyle(
-                            color: _ink,
-                            fontSize: 10.5,
-                            fontWeight: pw.FontWeight.bold),
-                      ),
-                    ),
-                    if (lineKeys.isNotEmpty) ...[
-                      pw.SizedBox(width: 10),
-                      _timelineArtwork(lineKeys, trainArtwork),
-                    ],
-                  ],
+          child: pw.Row(
+            crossAxisAlignment: pw.CrossAxisAlignment.start,
+            children: [
+              pw.Container(
+                width: 3,
+                height: 34,
+                decoration: pw.BoxDecoration(
+                  color: accent,
+                  borderRadius: pw.BorderRadius.circular(2),
                 ),
-                pw.SizedBox(height: 4),
-                _text(_timelineMeta(row, copy, isArabic),
-                    isArabic: isArabic,
-                    style: const pw.TextStyle(color: _muted, fontSize: 8.5)),
-              ]),
+              ),
+              pw.SizedBox(width: 8),
+              pw.Expanded(
+                child: pw.Column(
+                    crossAxisAlignment: pw.CrossAxisAlignment.start,
+                    children: [
+                      pw.Row(
+                        crossAxisAlignment: pw.CrossAxisAlignment.center,
+                        children: [
+                          pw.Expanded(
+                            child: _text(
+                              row.isTransfer
+                                  ? '${copy.transfer}: ${_stationName(row.transfer!.station, copy)}'
+                                  : '${_stationName(row.segment!.fromStation, copy)} ${copy.to} ${_stationName(row.segment!.toStation, copy)}',
+                              isArabic: isArabic,
+                              style: pw.TextStyle(
+                                  color: _ink,
+                                  fontSize: 10.5,
+                                  fontWeight: pw.FontWeight.bold),
+                            ),
+                          ),
+                          if (lineKeys.isNotEmpty) ...[
+                            pw.SizedBox(width: 10),
+                            _timelineArtwork(lineKeys, trainArtwork),
+                          ],
+                        ],
+                      ),
+                      pw.SizedBox(height: 4),
+                      _text(_timelineMeta(row, copy, isArabic),
+                          isArabic: isArabic,
+                          style:
+                              const pw.TextStyle(color: _muted, fontSize: 8.5)),
+                    ]),
+              ),
+            ],
+          ),
         )),
       ]),
     );
@@ -987,6 +1111,7 @@ class TripPdfReportData {
   final DateTime startedAt;
   final DateTime? finishedAt;
   final List<String> metroLineKeys;
+  final List<String> includedMetroLineKeys;
   final String? fromStation;
   final String? toStation;
   final String languageCode;
@@ -1001,10 +1126,14 @@ class TripPdfReportData {
     required this.startedAt,
     required this.finishedAt,
     required this.metroLineKeys,
+    this.includedMetroLineKeys = const [],
     required this.fromStation,
     required this.toStation,
     required this.languageCode,
   });
+
+  List<String> get effectiveMetroLineKeys =>
+      includedMetroLineKeys.isEmpty ? metroLineKeys : includedMetroLineKeys;
 }
 
 class TripPdfSegment {
@@ -1013,6 +1142,7 @@ class TripPdfSegment {
   final String toStation;
   final String lineKey;
   final int seconds;
+  final int? distanceMeters;
   final DateTime? startedAt;
   final DateTime? finishedAt;
 
@@ -1022,6 +1152,7 @@ class TripPdfSegment {
     required this.toStation,
     required this.lineKey,
     required this.seconds,
+    required this.distanceMeters,
     required this.startedAt,
     required this.finishedAt,
   });
@@ -1057,6 +1188,8 @@ class _TripPdfTimelineRow {
   bool get isTransfer => transfer != null;
   String get id => transfer?.id ?? segment!.id;
   DateTime? get startedAt => transfer?.startedAt ?? segment?.startedAt;
+  DateTime? get finishedAt => transfer?.finishedAt ?? segment?.finishedAt;
+  int get seconds => transfer?.seconds ?? segment?.seconds ?? 0;
 }
 
 class _TripPdfCopy {

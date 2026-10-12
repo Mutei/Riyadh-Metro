@@ -18,6 +18,7 @@ import '../constants/colors.dart';
 import '../services/app_bus.dart';
 import '../services/local_notifications.dart';
 import '../services/metro_open_close_alerts.dart';
+import '../services/metro_marker_motion.dart';
 import '../services/metro_train_marker_preferences.dart';
 import '../services/trip_notification_settings.dart';
 import '../widgets/all_metro_lines.dart'; // metroLineColors
@@ -573,10 +574,24 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   final Map<String, BitmapDescriptor> _metroTrainIcons = {};
   final Map<String, ui.Image> _metroTrainArtwork = {};
   MetroTrainMarkerStyle _metroTrainMarkerStyle = MetroTrainMarkerStyle.classic;
-  double? _directionalTrainBearing;
+  final MetroMarkerMotion _metroMarkerMotion = MetroMarkerMotion();
+  final ValueNotifier<Marker?> _animatedMetroMarker = ValueNotifier(null);
+  Timer? _metroMarkerAnimationTimer;
+  DateTime? _lastMetroMarkerTargetAt;
+  String _animatedMetroLineKey = 'blue';
+  MetroTrainMarkerStyle _animatedMetroMarkerStyle =
+      MetroTrainMarkerStyle.classic;
+  BitmapDescriptor? _animatedMetroFallbackIcon;
   ValueNotifier<OnboardDisplayData>? _onboardDisplayUpdates;
   Marker? _userArrowMarker; // updated every fix
   bool _debugTrainPinVisible = false;
+  bool _debugMetroMotionPreviewRunning = false;
+  Timer? _debugMetroMotionRouteTimer;
+  List<LatLng> _debugMetroMotionPath = const <LatLng>[];
+  int _debugMetroMotionPathIndex = 0;
+  int _debugMetroMotionDirection = 1;
+  Marker? _markerBeforeMetroMotionPreview;
+  bool _debugTrainPinWasVisibleBeforeMotionPreview = false;
   int _offRouteStreak = 0; // consecutive ticks off the selected route
   bool _isRerouting = false; // guard so we don't reroute twice at once
   DateTime _lastRerouteAt = DateTime.fromMillisecondsSinceEpoch(0);
@@ -1076,17 +1091,87 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
   int _directionIndexForBearing(double bearing) =>
       ((((bearing % 360) + 360 + 22.5) % 360) ~/ 45).clamp(0, 7).toInt();
 
-  double _smoothDirectionalBearing(double target) {
-    final normalized = ((target % 360) + 360) % 360;
-    final current = _directionalTrainBearing;
-    if (current == null) {
-      _directionalTrainBearing = normalized;
-      return normalized;
+  void _setMetroMarkerTarget({
+    required LatLng position,
+    required double heading,
+    required String lineKey,
+    required MetroTrainMarkerStyle style,
+    required BitmapDescriptor fallbackIcon,
+  }) {
+    final now = DateTime.now();
+    final updateGap = _lastMetroMarkerTargetAt == null
+        ? const Duration(milliseconds: 900)
+        : now.difference(_lastMetroMarkerTargetAt!);
+    final durationMs =
+        (updateGap.inMilliseconds * 1.05).round().clamp(450, 1800).toInt();
+
+    _lastMetroMarkerTargetAt = now;
+    _animatedMetroLineKey = lineKey;
+    _animatedMetroMarkerStyle = style;
+    _animatedMetroFallbackIcon = fallbackIcon;
+    _metroMarkerMotion.retarget(
+      position: position,
+      heading: heading,
+      at: now,
+      duration: Duration(milliseconds: durationMs),
+    );
+    _renderMetroMarkerFrame(now);
+    _metroMarkerAnimationTimer ??=
+        Timer.periodic(const Duration(milliseconds: 33), (timer) {
+      final liveMetroTrip = _navigating && _tripMode == _TripMode.metro;
+      if (!mounted || (!liveMetroTrip && !_debugMetroMotionPreviewRunning)) {
+        timer.cancel();
+        _metroMarkerAnimationTimer = null;
+        return;
+      }
+      _renderMetroMarkerFrame(DateTime.now());
+    });
+  }
+
+  void _renderMetroMarkerFrame(DateTime now) {
+    final frame = _metroMarkerMotion.frameAt(now);
+    if (frame == null) return;
+
+    final directionIndex = _directionIndexForBearing(frame.heading);
+    final icon = _metroTrainIcons[_metroTrainIconKey(
+          _animatedMetroLineKey,
+          _animatedMetroMarkerStyle,
+          directionIndex: directionIndex,
+        )] ??
+        _animatedMetroFallbackIcon;
+    if (icon == null) return;
+
+    _animatedMetroMarker.value = Marker(
+      markerId: const MarkerId('me_nav_metro_animated'),
+      position: frame.position,
+      icon: icon,
+      anchor: const Offset(0.5, 0.5),
+      flat: true,
+      rotation: _metroMarkerRotation(frame.heading, directionIndex),
+      zIndex: 4000,
+    );
+
+    if (frame.complete) {
+      _metroMarkerAnimationTimer?.cancel();
+      _metroMarkerAnimationTimer = null;
     }
-    final delta = ((normalized - current + 540) % 360) - 180;
-    final smoothed = (current + delta * .32 + 360) % 360;
-    _directionalTrainBearing = smoothed;
-    return smoothed;
+  }
+
+  double _metroMarkerRotation(double heading, int directionIndex) {
+    if (_animatedMetroMarkerStyle != MetroTrainMarkerStyle.directional3d) {
+      return heading;
+    }
+    final assetHeading = directionIndex * 45.0;
+    return ((heading - assetHeading + 540) % 360) - 180;
+  }
+
+  void _resetMetroMarkerAnimation({bool clearMarker = true}) {
+    _metroMarkerAnimationTimer?.cancel();
+    _metroMarkerAnimationTimer = null;
+    _lastMetroMarkerTargetAt = null;
+    _animatedMetroFallbackIcon = null;
+    _metroMarkerMotion.reset();
+    if (clearMarker) _animatedMetroMarker.value = null;
   }
 
   Future<ui.Image> _loadMetroTrainArtwork(String asset) async {
@@ -1532,6 +1617,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   Future<void> _startTrip() async {
     if (_endingTrip) return;
+    if (_debugMetroMotionPreviewRunning) {
+      _stopDebugMetroMotionPreview(showMessage: false);
+    }
     if (_userDestination == null) {
       _notify(getTranslated(context, 'Pick a destination first.'));
       return;
@@ -2234,8 +2322,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           : _metroCurLineKey;
       final directionalMarker = _tripMode == _TripMode.metro &&
           _metroTrainMarkerStyle == MetroTrainMarkerStyle.directional3d;
-      final markerBearing =
-          directionalMarker ? _smoothDirectionalBearing(brg) : brg;
+      final markerBearing = ((brg % 360) + 360) % 360;
       final directionIndex = _directionIndexForBearing(markerBearing);
       final BitmapDescriptor? navigationIcon = _tripMode == _TripMode.metro
           ? _metroTrainIcons[_metroTrainIconKey(
@@ -2254,6 +2341,17 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
           rotation: directionalMarker ? 0 : brg,
           zIndex: 4000,
         );
+        if (_tripMode == _TripMode.metro) {
+          _setMetroMarkerTarget(
+            position: uiPos,
+            heading: markerBearing,
+            lineKey: activeMetroLineKey ?? 'blue',
+            style: _metroTrainMarkerStyle,
+            fallbackIcon: navigationIcon,
+          );
+        } else if (_metroMarkerMotion.hasFrame) {
+          _resetMetroMarkerAnimation();
+        }
       }
 
       // Live status
@@ -2779,6 +2877,7 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
       _uiNavSub = null;
       _predictTimer?.cancel();
       _predictTimer = null;
+      _resetMetroMarkerAnimation();
 
       // Remove all active-trip cards immediately. Persisting trip history may
       // take a moment, but the user should never see an active journey after
@@ -3436,6 +3535,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     _busSub?.cancel();
     _busRouteSub?.cancel();
     _busFocusSub?.cancel();
+    _debugMetroMotionRouteTimer?.cancel();
+    _resetMetroMarkerAnimation(clearMarker: false);
+    _animatedMetroMarker.dispose();
     _onboardDisplayUpdates?.dispose();
     _onboardDisplayUpdates = null;
 
@@ -5579,9 +5681,144 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
     return '${(mps * 3.6).toStringAsFixed(0)} km/h';
   }
 
+  List<LatLng> _buildDebugMetroMotionPath() {
+    final raw = _slicePolylineByStations('blue', 0, 3);
+    if (raw.length <= 2) return raw;
+
+    const targetSamples = 18;
+    final sampleCount = math.min(targetSamples, raw.length);
+    return List<LatLng>.generate(sampleCount, (index) {
+      final sourceIndex =
+          ((raw.length - 1) * index / (sampleCount - 1)).round();
+      return raw[sourceIndex];
+    });
+  }
+
+  Future<void> _toggleDebugMetroMotionPreview() async {
+    if (!kDebugMode || _navigating) return;
+    if (_debugMetroMotionPreviewRunning) {
+      _stopDebugMetroMotionPreview();
+      return;
+    }
+
+    final path = _buildDebugMetroMotionPath();
+    if (path.length < 2) {
+      _notify('The metro preview route is unavailable.');
+      return;
+    }
+
+    await _prepareMetroTrainIcons(
+      styles: [_metroTrainMarkerStyle],
+      lineKeys: const ['blue'],
+    );
+    if (!mounted || _navigating) return;
+
+    final fallbackIcon = _metroTrainIcons[_metroTrainIconKey(
+          'blue',
+          _metroTrainMarkerStyle,
+          directionIndex: _directionIndexForBearing(
+            _bearing(path.first, path[1]),
+          ),
+        )] ??
+        BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueBlue);
+
+    _resetMetroMarkerAnimation();
+    _markerBeforeMetroMotionPreview = _userArrowMarker;
+    _debugTrainPinWasVisibleBeforeMotionPreview = _debugTrainPinVisible;
+    setState(() {
+      _debugMetroMotionPreviewRunning = true;
+      _debugTrainPinVisible = true;
+      _debugMetroMotionPath = path;
+      _debugMetroMotionPathIndex = 0;
+      _debugMetroMotionDirection = 1;
+    });
+
+    _setMetroMarkerTarget(
+      position: path.first,
+      heading: _bearing(path.first, path[1]),
+      lineKey: 'blue',
+      style: _metroTrainMarkerStyle,
+      fallbackIcon: fallbackIcon,
+    );
+
+    try {
+      final controller = await _mapController.future;
+      final midpoint = path[path.length ~/ 2];
+      await controller
+          .animateCamera(CameraUpdate.newLatLngZoom(midpoint, 14.5));
+    } catch (_) {}
+
+    if (!mounted || !_debugMetroMotionPreviewRunning) return;
+    _debugMetroMotionRouteTimer =
+        Timer.periodic(const Duration(milliseconds: 950), (_) {
+      if (!mounted ||
+          !_debugMetroMotionPreviewRunning ||
+          _navigating ||
+          _debugMetroMotionPath.length < 2) {
+        _stopDebugMetroMotionPreview(showMessage: false);
+        return;
+      }
+
+      var nextIndex = _debugMetroMotionPathIndex + _debugMetroMotionDirection;
+      if (nextIndex >= _debugMetroMotionPath.length || nextIndex < 0) {
+        _debugMetroMotionDirection *= -1;
+        nextIndex = _debugMetroMotionPathIndex + _debugMetroMotionDirection;
+      }
+
+      final from = _debugMetroMotionPath[_debugMetroMotionPathIndex];
+      final to = _debugMetroMotionPath[nextIndex];
+      _debugMetroMotionPathIndex = nextIndex;
+      _setMetroMarkerTarget(
+        position: to,
+        heading: _bearing(from, to),
+        lineKey: 'blue',
+        style: _metroTrainMarkerStyle,
+        fallbackIcon: fallbackIcon,
+      );
+    });
+
+    _notify(
+      'Metro motion test is running. The trip tracker and history are unchanged.',
+    );
+  }
+
+  void _stopDebugMetroMotionPreview({bool showMessage = true}) {
+    if (!_debugMetroMotionPreviewRunning &&
+        _debugMetroMotionRouteTimer == null) {
+      return;
+    }
+
+    _debugMetroMotionRouteTimer?.cancel();
+    _debugMetroMotionRouteTimer = null;
+    _resetMetroMarkerAnimation();
+
+    void restorePreviewState() {
+      _debugMetroMotionPreviewRunning = false;
+      _debugMetroMotionPath = const <LatLng>[];
+      _debugMetroMotionPathIndex = 0;
+      _debugMetroMotionDirection = 1;
+      _userArrowMarker = _markerBeforeMetroMotionPreview;
+      _debugTrainPinVisible = _debugTrainPinWasVisibleBeforeMotionPreview;
+      _markerBeforeMetroMotionPreview = null;
+      _debugTrainPinWasVisibleBeforeMotionPreview = false;
+    }
+
+    if (mounted) {
+      setState(restorePreviewState);
+      if (showMessage) {
+        _notify('Metro motion test stopped. No trip data was recorded.');
+      }
+    } else {
+      restorePreviewState();
+    }
+  }
+
   /// Temporary debug-only preview for reviewing the onboard sheet off-metro.
   /// It deliberately does not write trip state or start location tracking.
   Future<void> _showStationPulsePreview() async {
+    if (_debugMetroMotionPreviewRunning) {
+      _stopDebugMetroMotionPreview(showMessage: false);
+    }
     await _prepareMetroTrainIcons(lineKeys: const ['blue']);
     if (!mounted) return;
 
@@ -5643,6 +5880,9 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
 
   /// Temporary debug-only map preview. It never starts navigation or tracking.
   Future<void> _toggleMetroTrainPinPreview() async {
+    if (_debugMetroMotionPreviewRunning) {
+      _stopDebugMetroMotionPreview(showMessage: false);
+    }
     if (_debugTrainPinVisible) {
       setState(() {
         _debugTrainPinVisible = false;
@@ -5860,66 +6100,73 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
                 _applyMapStyleForTheme();
               });
 
-              return GoogleMap(
-                initialCameraPosition: _camera,
-                polylines: _currentPolylines(),
-                circles: _metroStationCircles(),
-                markers: {
-                  if (_userArrowMarker != null)
-                    _userArrowMarker!, // heading arrow
-                  ..._stationMarkersForMap(),
-                  if (_destMarker != null) _destMarker!,
-                },
-                onCameraMove: (pos) {
-                  // Only break follow when user changes ZOOM (pinch/double-tap)
-                  final zoomChanged = (pos.zoom - _camera.zoom).abs() > 0.01;
-                  if (zoomChanged &&
-                      _navigating &&
-                      !_camBusy &&
-                      _followEnabled) {
-                    setState(() => _followEnabled = false);
-                  }
+              return ValueListenableBuilder<Marker?>(
+                valueListenable: _animatedMetroMarker,
+                builder: (context, metroMarker, child) => GoogleMap(
+                  initialCameraPosition: _camera,
+                  polylines: _currentPolylines(),
+                  circles: _metroStationCircles(),
+                  markers: {
+                    if (((_navigating && _tripMode == _TripMode.metro) ||
+                            _debugMetroMotionPreviewRunning) &&
+                        metroMarker != null)
+                      metroMarker
+                    else if (_userArrowMarker != null)
+                      _userArrowMarker!,
+                    ..._stationMarkersForMap(),
+                    if (_destMarker != null) _destMarker!,
+                  },
+                  onCameraMove: (pos) {
+                    // Only break follow when user changes ZOOM (pinch/double-tap)
+                    final zoomChanged = (pos.zoom - _camera.zoom).abs() > 0.01;
+                    if (zoomChanged &&
+                        _navigating &&
+                        !_camBusy &&
+                        _followEnabled) {
+                      setState(() => _followEnabled = false);
+                    }
 
-                  _lastCameraTarget = pos.target;
-                  _camera =
-                      pos; // keep latest zoom/bearing/tilt for next comparisons
-                },
-                onCameraMoveStarted: () {
-                  // Panning/tilting/rotating won't break follow
-                },
-                onMapCreated: (c) async {
-                  _mapController.complete(c);
+                    _lastCameraTarget = pos.target;
+                    _camera =
+                        pos; // keep latest zoom/bearing/tilt for next comparisons
+                  },
+                  onCameraMoveStarted: () {
+                    // Panning/tilting/rotating won't break follow
+                  },
+                  onMapCreated: (c) async {
+                    _mapController.complete(c);
 
-                  // Apply style immediately for current theme
-                  await _applyMapStyleForTheme();
+                    // Apply style immediately for current theme
+                    await _applyMapStyleForTheme();
 
-                  // Center on first launch if permitted
-                  if (_locationGranted && !_initialCentered) {
-                    try {
-                      final pos = await Geolocator.getCurrentPosition(
-                        desiredAccuracy: LocationAccuracy.high,
-                      );
-                      _lastKnownPosition = pos;
-                      await c.animateCamera(
-                        CameraUpdate.newCameraPosition(
-                          CameraPosition(
-                            target: LatLng(pos.latitude, pos.longitude),
-                            zoom: 15.0,
+                    // Center on first launch if permitted
+                    if (_locationGranted && !_initialCentered) {
+                      try {
+                        final pos = await Geolocator.getCurrentPosition(
+                          desiredAccuracy: LocationAccuracy.high,
+                        );
+                        _lastKnownPosition = pos;
+                        await c.animateCamera(
+                          CameraUpdate.newCameraPosition(
+                            CameraPosition(
+                              target: LatLng(pos.latitude, pos.longitude),
+                              zoom: 15.0,
+                            ),
                           ),
-                        ),
-                      );
-                      if (mounted) setState(() => _initialCentered = true);
-                    } catch (_) {}
-                  }
-                },
-                // The custom metro train pin is the active-trip indicator.
-                // Also hide the native blue dot while its debug preview is visible.
-                myLocationEnabled: !_navigating && !_debugTrainPinVisible,
-                myLocationButtonEnabled: true,
-                compassEnabled: true,
-                zoomControlsEnabled: false,
-                buildingsEnabled: true,
-                trafficEnabled: _trafficEnabled,
+                        );
+                        if (mounted) setState(() => _initialCentered = true);
+                      } catch (_) {}
+                    }
+                  },
+                  // The custom metro train pin is the active-trip indicator.
+                  // Also hide the native blue dot while its debug preview is visible.
+                  myLocationEnabled: !_navigating && !_debugTrainPinVisible,
+                  myLocationButtonEnabled: true,
+                  compassEnabled: true,
+                  zoomControlsEnabled: false,
+                  buildingsEnabled: true,
+                  trafficEnabled: _trafficEnabled,
+                ),
               );
             },
           ),
@@ -7372,6 +7619,25 @@ class _MainScreenState extends State<MainScreen> with WidgetsBindingObserver {
             ],
           ),
         ),
+        if (kDebugMode && !_navigating)
+          Positioned(
+            left: 12,
+            bottom: 240,
+            child: FloatingActionButton.extended(
+              heroTag: 'metroMotionPreview',
+              backgroundColor: _debugMetroMotionPreviewRunning
+                  ? const Color(0xFFB3261E)
+                  : const Color(0xFF0C6B58),
+              foregroundColor: Colors.white,
+              onPressed: _toggleDebugMetroMotionPreview,
+              icon: Icon(_debugMetroMotionPreviewRunning
+                  ? Icons.stop_rounded
+                  : Icons.motion_photos_on_rounded),
+              label: Text(_debugMetroMotionPreviewRunning
+                  ? 'Stop Motion Test'
+                  : 'Test Metro Motion'),
+            ),
+          ),
         if (kDebugMode && !_navigating)
           Positioned(
             left: 12,

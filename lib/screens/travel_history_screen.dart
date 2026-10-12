@@ -1217,11 +1217,190 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
     }
   }
 
+  String _canonicalLine(String value) {
+    final normalized = value.trim().toLowerCase();
+    if (normalized.isEmpty) return '';
+    return normalized[0].toUpperCase() + normalized.substring(1);
+  }
+
+  String _pdfPickerText(BuildContext context, String english, String arabic) =>
+      _isArabic(context) ? arabic : english;
+
+  Future<List<String>?> _choosePdfLines(List<String> rawLines) async {
+    final lines = rawLines
+        .map(_canonicalLine)
+        .where((line) => line.isNotEmpty)
+        .toSet()
+        .toList();
+    if (lines.length <= 1) return lines;
+
+    final selected = lines.toSet();
+    return showModalBottomSheet<List<String>>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (sheetContext) => StatefulBuilder(
+        builder: (context, setSheetState) {
+          final theme = Theme.of(context);
+          final cs = theme.colorScheme;
+          final allSelected = selected.length == lines.length;
+          return FractionallySizedBox(
+            heightFactor: 0.78,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        _pdfPickerText(
+                          context,
+                          'Choose metro lines',
+                          'اختر خطوط المترو',
+                        ),
+                        style: theme.textTheme.titleLarge?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        _pdfPickerText(
+                          context,
+                          'Only details from the selected lines will appear in the PDF.',
+                          'ستظهر في ملف PDF تفاصيل الخطوط المحددة فقط.',
+                        ),
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: cs.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                CheckboxListTile(
+                  value: allSelected
+                      ? true
+                      : selected.isEmpty
+                          ? false
+                          : null,
+                  tristate: selected.isNotEmpty && !allSelected,
+                  onChanged: (_) => setSheetState(() {
+                    if (allSelected) {
+                      selected.clear();
+                    } else {
+                      selected
+                        ..clear()
+                        ..addAll(lines);
+                    }
+                  }),
+                  secondary: Container(
+                    width: 46,
+                    height: 46,
+                    decoration: BoxDecoration(
+                      color: cs.primaryContainer,
+                      borderRadius: BorderRadius.circular(14),
+                    ),
+                    child:
+                        Icon(Icons.route_rounded, color: cs.onPrimaryContainer),
+                  ),
+                  title: Text(
+                    _pdfPickerText(context, 'All trip lines', 'كل خطوط الرحلة'),
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  subtitle: Text('${lines.length}'),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: ListView.separated(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    itemCount: lines.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 2),
+                    itemBuilder: (context, index) {
+                      final line = lines[index];
+                      final checked = selected.contains(line);
+                      return CheckboxListTile(
+                        value: checked,
+                        onChanged: (value) => setSheetState(() {
+                          if (value == true) {
+                            selected.add(line);
+                          } else {
+                            selected.remove(line);
+                          }
+                        }),
+                        secondary: LineCapsule(
+                          label: line,
+                          color: _lineColor(line),
+                          dense: true,
+                        ),
+                        title: Text(
+                          line,
+                          style: const TextStyle(fontWeight: FontWeight.w700),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.pop(sheetContext),
+                          child:
+                              Text(_pdfPickerText(context, 'Cancel', 'إلغاء')),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        flex: 2,
+                        child: FilledButton.icon(
+                          onPressed: selected.isEmpty
+                              ? null
+                              : () => Navigator.pop(
+                                    sheetContext,
+                                    lines
+                                        .where(selected.contains)
+                                        .toList(growable: false),
+                                  ),
+                          icon: const Icon(Icons.picture_as_pdf_outlined),
+                          label: Text(_pdfPickerText(
+                            context,
+                            'Export selected',
+                            'تصدير المحدد',
+                          )),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
   Future<void> _exportTripPdf() async {
     if (_exportingPdf) return;
 
-    setState(() => _exportingPdf = true);
     final entry = widget.entry;
+    final tripLines = (entry.metroLineKeys ?? const <String>[])
+        .map(_canonicalLine)
+        .where((line) => line.isNotEmpty)
+        .toSet()
+        .toList();
+    final chosenLines = entry.mode == 'metro' && tripLines.length > 1
+        ? await _choosePdfLines(tripLines)
+        : tripLines;
+    if (chosenLines == null || !mounted) return;
+
+    final includedLines =
+        chosenLines.length == tripLines.length ? const <String>[] : chosenLines;
+    setState(() => _exportingPdf = true);
     try {
       await TripPdfService.instance.exportAndShare(
         TripPdfReportData(
@@ -1234,6 +1413,7 @@ class _TripDetailsSheetState extends State<_TripDetailsSheet> {
           startedAt: entry.startedAt,
           finishedAt: entry.finishedAt,
           metroLineKeys: entry.metroLineKeys ?? const [],
+          includedMetroLineKeys: includedLines,
           fromStation: entry.fromStation,
           toStation: entry.toStation,
           languageCode: Localizations.localeOf(context).languageCode,
